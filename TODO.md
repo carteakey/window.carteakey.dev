@@ -15,11 +15,9 @@
 - [ ] One-click "record 10-min clip" button that captures the submission video WindowSwap requires
 - [ ] Progress indicator + download link when done
 
-## Hardware encoding (when fan is installed)
-- [ ] Hardware H264 → HLS: `rpicam-vid --codec h264` → ffmpeg HLS segments → hls.js frontend
-      (~3% CPU, 5-10s latency, fully hardware accelerated via h264_v4l2m2m)
-- [ ] OR: hardware MJPEG via /dev/video11 (mjpeg_v4l2m2m) — zero latency, ~5% CPU
-      pipeline: `rpicam-vid --codec yuv420 | ffmpeg -c:v mjpeg_v4l2m2m -f mpjpeg`
+## Hardware encoding
+- [x] Hardware H264 → HLS: `rpicam-vid --codec h264` → ffmpeg HLS segments → hls.js
+      1080p@30fps, ~38% CPU total, 6-8s latency, CF tunnel ToS compliant
 
 ## Misc
 - [ ] Show snapshot count / last snapshot time in UI (small indicator)

@@ -9,6 +9,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
 <meta name="apple-mobile-web-app-title" content="window">
 <meta name="theme-color" content="#000000">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -30,6 +31,7 @@
     object-fit: cover;
     display: block;
     transition: filter 2s ease;
+    background: #000;
   }
 
   /* ── UI fade wrapper ───────────────────────────────────────────────────── */
@@ -209,7 +211,7 @@
 </head>
 <body>
 
-<img id="feed" src="/stream" alt="live feed">
+<video id="feed" autoplay muted playsinline></video>
 
 <div id="ui">
   <!-- top-left -->
@@ -336,7 +338,7 @@ updateClock();
 setInterval(updateClock, 1000);
 
 // ── Weather ───────────────────────────────────────────────────────────────────
-const feed = document.getElementById('feed');
+const feed = document.getElementById('feed');  // <video> element
 
 function applyNightMode(sunrise, sunset) {
   if (!sunrise || !sunset) return;
@@ -356,34 +358,45 @@ fetch('/api/weather')
   })
   .catch(() => {});
 
-// ── Stream reconnect ──────────────────────────────────────────────────────────
-// MJPEG img.onerror doesn't fire on stream stalls, only hard failures.
-// We piggyback on the /api/viewers poll — it includes a stream generation
-// counter that increments each time rpicam-vid restarts (i.e. after snapshot).
-// When gen changes, reload the stream src after a short delay.
-feed.addEventListener('error', () => {
-  setTimeout(() => { feed.src = '/stream?' + Date.now(); }, 2000);
-});
+// ── HLS stream ────────────────────────────────────────────────────────────────
+const HLS_SRC = '/hls/stream.m3u8';
+let hls;
 
-// ── Viewer count + stream reconnect (poll every 3s) ───────────────────────────
+function initHLS() {
+  if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+    if (hls) hls.destroy();
+    hls = new Hls({
+      liveSyncDurationCount:    3,
+      liveMaxLatencyDurationCount: 6,
+      maxBufferLength:          10,
+      backBufferLength:         0,
+    });
+    hls.loadSource(HLS_SRC);
+    hls.attachMedia(feed);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => feed.play().catch(() => {}));
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) setTimeout(initHLS, 3000);
+    });
+  } else if (feed.canPlayType('application/vnd.apple.mpegurl')) {
+    // Native HLS — iOS Safari
+    feed.src = HLS_SRC;
+    feed.play().catch(() => {});
+  }
+}
+
+// Wait until the server has produced at least one segment (~4s)
+setTimeout(initHLS, 5000);
+
+// ── Viewer count ──────────────────────────────────────────────────────────────
 const viewerEl = document.getElementById('viewer-count');
-let lastGen = null;
-
 function updateViewers() {
   fetch('/api/viewers')
     .then(r => r.json())
-    .then(d => {
-      viewerEl.textContent = d.count > 0 ? `· ${d.count}` : '';
-      // gen increments each time rpicam-vid restarts after a snapshot pause
-      if (lastGen !== null && d.gen !== lastGen) {
-        setTimeout(() => { feed.src = '/stream?' + Date.now(); }, 500);
-      }
-      lastGen = d.gen;
-    })
+    .then(d => { viewerEl.textContent = d.count > 0 ? `· ${d.count}` : ''; })
     .catch(() => {});
 }
 updateViewers();
-setInterval(updateViewers, 3000);
+setInterval(updateViewers, 10000);
 
 // ── Fullscreen ────────────────────────────────────────────────────────────────
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;

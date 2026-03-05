@@ -9,38 +9,32 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template, send_from_directory
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# 1080p@15fps: MJPEG is software-encoded on Pi 4B (~35% CPU). Hardware MJPEG
-# is possible via /dev/video11 (mjpeg_v4l2m2m) but needs a 2-process pipeline.
-# Hardware H264→HLS (~3% CPU) is the cleanest path but adds 5-10s latency.
-# With fan installed temps drop to ~45°C — this config is stable as-is.
-WIDTH = 1920
-HEIGHT = 1080
-FPS = 15
-PORT = 8765
+# Hardware H264 via rpicam-vid → ffmpeg HLS segmenter.
+# h264_v4l2m2m is available but rpicam-vid already uses the Pi VPU internally.
+# -c:v copy in ffmpeg passes the stream through without re-encoding.
+# CPU: ~5-8% vs ~35% for software MJPEG.  Latency: ~6-8s (HLS buffer).
+WIDTH    = 1920
+HEIGHT   = 1080
+FPS      = 30
+BITRATE  = "4000000"   # 4 Mbps — excellent quality for 1080p
+INTRA    = 60          # keyframe every 2s at 30fps (required for HLS cuts)
+PORT     = 8765
 LOCATION = "Toronto, Canada"
 LAT, LON = 43.70, -79.42
-SNAPSHOT_INTERVAL = 30  # seconds
+SNAPSHOT_INTERVAL = 30   # seconds
+HLS_DIR      = Path("static/hls")
 SNAPSHOT_DIR = Path("static/snapshots")
 TIMELAPSE_DIR = Path("static/timelapse")
-MUSIC_DIR = Path("static/music")
-WEATHER_TTL = 900  # 15 min cache
+MUSIC_DIR    = Path("static/music")
+WEATHER_TTL  = 900  # 15 min cache
 
 # ── Shared state ──────────────────────────────────────────────────────────────
-current_frame: bytes | None = None
-frame_lock = threading.Lock()
-frame_event = threading.Event()
-
-camera_proc: subprocess.Popen | None = None
-snapshot_in_progress = threading.Event()  # set while rpicam-still is running
-
-viewer_count = 0
-viewer_lock = threading.Lock()
-
-stream_generation = 0  # increments each time rpicam-vid restarts
-
+viewer_count    = 0
+viewer_lock     = threading.Lock()
+stream_generation = 0
 weather_cache: dict = {"data": None, "ts": 0.0}
 
 app = Flask(__name__)
@@ -69,12 +63,11 @@ def fetch_weather():
     with urllib.request.urlopen(url, timeout=5) as r:
         d = json.loads(r.read())
     c = d["current"]
-    daily = d["daily"]
     return {
         "temp": round(c["temperature_2m"]),
         "desc": WMO_DESC.get(c["weather_code"], ""),
-        "sunrise": daily["sunrise"][0],
-        "sunset":  daily["sunset"][0],
+        "sunrise": d["daily"]["sunrise"][0],
+        "sunset":  d["daily"]["sunset"][0],
     }
 
 def get_weather():
@@ -90,95 +83,77 @@ def get_weather():
         return weather_cache["data"] or {"temp": "--", "desc": "", "sunrise": None, "sunset": None}
 
 
-# ── Camera capture thread ─────────────────────────────────────────────────────
+# ── Capture thread: rpicam-vid → ffmpeg → HLS ─────────────────────────────────
 def capture_thread():
-    global current_frame, camera_proc
-    cmd = [
-        "rpicam-vid",
-        "-t", "0",
-        "--codec", "mjpeg",
-        "--width", str(WIDTH),
-        "--height", str(HEIGHT),
-        "--framerate", str(FPS),
-        "--nopreview",
-        "-o", "-",
-    ]
-    while True:
-        # Wait if a snapshot is being taken
-        while snapshot_in_progress.is_set():
-            time.sleep(0.2)
+    global stream_generation
+    HLS_DIR.mkdir(parents=True, exist_ok=True)
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        camera_proc = proc
-        global stream_generation
+    while True:
+        cam = subprocess.Popen(
+            [
+                "rpicam-vid", "-t", "0",
+                "--codec", "h264",
+                "--width", str(WIDTH), "--height", str(HEIGHT),
+                "--framerate", str(FPS),
+                "--bitrate", BITRATE,
+                "--intra", str(INTRA),
+                "--nopreview",
+                "-o", "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        ffmpeg = subprocess.Popen(
+            [
+                "ffmpeg", "-y",
+                "-i", "pipe:0",
+                "-c:v", "copy",
+                "-f", "hls",
+                "-hls_time", "2",
+                "-hls_list_size", "5",
+                "-hls_flags", "delete_segments+append_list",
+                "-hls_segment_filename", str(HLS_DIR / "seg%d.ts"),
+                str(HLS_DIR / "stream.m3u8"),
+            ],
+            stdin=cam.stdout,
+            stderr=subprocess.DEVNULL,
+        )
+        cam.stdout.close()  # let ffmpeg own the pipe
         stream_generation += 1
-        buf = b""
-        try:
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                buf += chunk
-                while True:
-                    start = buf.find(b"\xff\xd8")
-                    end = buf.find(b"\xff\xd9", start + 2)
-                    if start == -1 or end == -1:
-                        break
-                    frame = buf[start: end + 2]
-                    buf = buf[end + 2:]
-                    with frame_lock:
-                        current_frame = frame
-                    frame_event.set()
-                    frame_event.clear()
-        except Exception:
-            pass
-        finally:
-            proc.kill()
-            camera_proc = None
+
+        ffmpeg.wait()
+        cam.kill()
         time.sleep(2)
 
 
-# ── Snapshot thread (full-res via rpicam-still) ───────────────────────────────
+# ── Snapshot thread: extract frame from latest complete .ts segment ───────────
 def snapshot_thread():
+    # Wait for HLS to produce some segments before starting
+    time.sleep(10)
     while True:
         time.sleep(SNAPSHOT_INTERVAL)
+        ts_files = sorted(HLS_DIR.glob("seg*.ts"))
+        if len(ts_files) < 2:
+            continue
+        src = ts_files[-2]  # second-to-last is always fully written
 
-        # Signal capture_thread to not restart while we use the camera
-        snapshot_in_progress.set()
+        today = datetime.now().strftime("%Y-%m-%d")
+        ts    = datetime.now().strftime("%H%M%S")
+        day_dir = SNAPSHOT_DIR / today
+        day_dir.mkdir(parents=True, exist_ok=True)
+        out = day_dir / f"{ts}.jpg"
 
-        # Terminate the running stream
-        proc = camera_proc
-        if proc:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-
-        try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            ts = datetime.now().strftime("%H%M%S")
-            day_dir = SNAPSHOT_DIR / today
-            day_dir.mkdir(parents=True, exist_ok=True)
-            out = day_dir / f"{ts}.jpg"
-
-            subprocess.run(
-                [
-                    "rpicam-still",
-                    "-o", str(out),
-                    "--width", "2592",
-                    "--height", "1944",
-                    "--timeout", "1500",
-                    "--nopreview",
-                ],
-                timeout=8,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
-        finally:
-            # Release camera — capture_thread will restart the stream
-            snapshot_in_progress.clear()
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(src),
+                "-vframes", "1",
+                "-q:v", "2",
+                str(out),
+            ],
+            timeout=10,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -187,35 +162,12 @@ def index():
     return render_template("index.html", location=LOCATION)
 
 
-def generate_stream():
-    global viewer_count
-    with viewer_lock:
-        viewer_count += 1
-    try:
-        while True:
-            frame_event.wait(timeout=2)
-            with frame_lock:
-                frame = current_frame
-            if frame is None:
-                continue
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n"
-                + frame
-                + b"\r\n"
-            )
-    finally:
-        with viewer_lock:
-            viewer_count -= 1
-
-
-@app.route("/stream")
-def stream():
-    return Response(
-        generate_stream(),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
-        headers={"Cache-Control": "no-cache", "Connection": "close"},
-    )
+@app.route("/hls/<path:filename>")
+def hls(filename):
+    mime = "application/vnd.apple.mpegurl" if filename.endswith(".m3u8") else "video/mp2t"
+    resp = send_from_directory(HLS_DIR, filename, mimetype=mime)
+    resp.headers["Cache-Control"] = "no-cache, no-store"
+    return resp
 
 
 @app.route("/api/music")
@@ -255,6 +207,7 @@ def manifest():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    HLS_DIR.mkdir(parents=True, exist_ok=True)
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     TIMELAPSE_DIR.mkdir(parents=True, exist_ok=True)
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
