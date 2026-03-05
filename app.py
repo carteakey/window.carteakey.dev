@@ -9,7 +9,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # Hardware H264 via rpicam-vid → ffmpeg HLS segmenter.
@@ -32,10 +32,11 @@ MUSIC_DIR    = Path("static/music")
 WEATHER_TTL  = 900  # 15 min cache
 
 # ── Shared state ──────────────────────────────────────────────────────────────
-viewer_count    = 0
+active_viewers: dict = {}   # session_id → last_seen timestamp
 viewer_lock     = threading.Lock()
 stream_generation = 0
 weather_cache: dict = {"data": None, "ts": 0.0}
+VIEWER_TTL = 60  # seconds — client heartbeats every 30s
 
 app = Flask(__name__)
 
@@ -186,10 +187,54 @@ def weather():
     return jsonify(get_weather())
 
 
+@app.route("/api/heartbeat", methods=["POST"])
+def heartbeat():
+    sid = request.get_json(silent=True, force=True) or {}
+    sid = str(sid.get("sid", ""))[:64]
+    if sid:
+        with viewer_lock:
+            active_viewers[sid] = time.time()
+    return "", 204
+
+
 @app.route("/api/viewers")
 def viewers():
+    now = time.time()
     with viewer_lock:
-        return jsonify({"count": viewer_count, "gen": stream_generation})
+        stale = [k for k, t in active_viewers.items() if now - t > VIEWER_TTL]
+        for k in stale:
+            del active_viewers[k]
+        count = len(active_viewers)
+    return jsonify({"count": count, "gen": stream_generation})
+
+
+@app.route("/api/snapshots")
+def snapshots_index():
+    if not SNAPSHOT_DIR.exists():
+        return jsonify([])
+    days = []
+    for d in sorted(SNAPSHOT_DIR.iterdir(), reverse=True):
+        if not d.is_dir():
+            continue
+        jpgs = sorted(d.glob("*.jpg"))
+        if not jpgs:
+            continue
+        # picture of day: snapshot closest to noon
+        noon = 120000
+        pod = min(jpgs, key=lambda f: abs(int(f.stem) - noon))
+        days.append({"date": d.name, "count": len(jpgs), "pod": pod.name})
+    return jsonify(days[:14])  # last 14 days
+
+
+@app.route("/api/snapshots/<date>")
+def snapshots_day(date):
+    day_dir = SNAPSHOT_DIR / date
+    if not day_dir.exists():
+        return jsonify({"files": [], "pod": None})
+    jpgs = sorted(f.name for f in day_dir.glob("*.jpg"))
+    noon = 120000
+    pod = min(jpgs, key=lambda f: abs(int(f[:6]) - noon)) if jpgs else None
+    return jsonify({"files": jpgs, "pod": pod})
 
 
 @app.route("/manifest.json")

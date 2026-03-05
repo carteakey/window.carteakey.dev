@@ -120,7 +120,7 @@
     display: flex;
     align-items: center;
     gap: 7px;
-    max-width: 400px;
+    max-width: min(480px, calc(100vw - 40px));
   }
 
   .ctrl-btn {
@@ -140,7 +140,7 @@
 
   #track-name {
     flex: 1;
-    min-width: 0;
+    min-width: 80px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -185,6 +185,79 @@
     align-items: center;
   }
 
+  /* ── Shuffle btn active state ──────────────────────────────────────────── */
+  .ctrl-btn.active { color: rgba(255,255,255,0.95); }
+
+  /* ── Snapshot panel ────────────────────────────────────────────────────── */
+  #snap-panel {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 300px;
+    z-index: 50;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.35s cubic-bezier(.4,0,.2,1);
+    font-size: 11px;
+  }
+  #snap-panel.open { transform: translateX(0); }
+
+  #snap-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 16px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    letter-spacing: 0.1em;
+    font-size: 10px;
+    color: rgba(255,255,255,0.5);
+  }
+  #snap-panel-header button {
+    background: none; border: none;
+    color: rgba(255,255,255,0.4); cursor: pointer; padding: 2px;
+    display: flex; align-items: center;
+  }
+  #snap-panel-header button:hover { color: #fff; }
+
+  #snap-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  #snap-scroll::-webkit-scrollbar { width: 3px; }
+  #snap-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+  .snap-day { display: flex; flex-direction: column; gap: 6px; }
+  .snap-day-label {
+    font-size: 9px; letter-spacing: 0.1em;
+    color: rgba(255,255,255,0.35);
+    padding-bottom: 2px;
+  }
+  .snap-pod {
+    width: 100%; aspect-ratio: 16/9;
+    object-fit: cover; border-radius: 4px;
+    display: block; cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .snap-pod:hover { opacity: 0.85; }
+  .snap-count { font-size: 9px; color: rgba(255,255,255,0.3); }
+
+  /* btn to open panel — sits in title bar */
+  #btn-snaps {
+    background: none; border: none;
+    color: rgba(255,255,255,0.5);
+    cursor: pointer; padding: 1px;
+    display: flex; align-items: center;
+    transition: color 0.15s;
+  }
+  #btn-snaps:hover { color: rgba(255,255,255,0.9); }
+
   /* ── Rotate overlay (portrait mobile) ─────────────────────────────────── */
   #rotate-overlay {
     display: none;
@@ -222,6 +295,11 @@
       LIVE
       <span id="viewer-count"></span>
     </div>
+    <button id="btn-snaps" title="Snapshots">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/><line x1="3" y1="9" x2="21" y2="9"/>
+      </svg>
+    </button>
   </div>
 
   <!-- top-right -->
@@ -268,6 +346,13 @@
     </button>
 
     <input type="range" id="vol-slider" min="0" max="1" step="0.02" value="1" title="Volume">
+
+    <button class="ctrl-btn" id="btn-shuffle" title="Shuffle">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
+        <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
+      </svg>
+    </button>
   </div>
 
   <!-- bottom-right -->
@@ -282,6 +367,19 @@
     </button>
   </div>
 </div><!-- #ui -->
+
+<!-- snapshot panel -->
+<div id="snap-panel">
+  <div id="snap-panel-header">
+    <span>SNAPSHOTS</span>
+    <button id="btn-snaps-close" title="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+  <div id="snap-scroll"></div>
+</div>
 
 <!-- portrait warning -->
 <div id="rotate-overlay">
@@ -387,16 +485,30 @@ function initHLS() {
 // Wait until the server has produced at least one segment (~4s)
 setTimeout(initHLS, 5000);
 
-// ── Viewer count ──────────────────────────────────────────────────────────────
+// ── Viewer count + heartbeat ───────────────────────────────────────────────────
 const viewerEl = document.getElementById('viewer-count');
+
+// stable session ID for this browser tab
+const SESSION_ID = (() => {
+  let id = sessionStorage.getItem('wcam_sid');
+  if (!id) { id = Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem('wcam_sid', id); }
+  return id;
+})();
+
+function sendHeartbeat() {
+  fetch('/api/heartbeat', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({sid: SESSION_ID}) }).catch(() => {});
+}
 function updateViewers() {
   fetch('/api/viewers')
     .then(r => r.json())
     .then(d => { viewerEl.textContent = d.count > 0 ? `· ${d.count}` : ''; })
     .catch(() => {});
 }
+
+sendHeartbeat();
 updateViewers();
-setInterval(updateViewers, 10000);
+setInterval(sendHeartbeat, 30000);
+setInterval(updateViewers, 15000);
 
 // ── Fullscreen ────────────────────────────────────────────────────────────────
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
@@ -449,8 +561,9 @@ const iconMuted = document.getElementById('icon-muted');
 const iconPlay  = document.getElementById('icon-play');
 const iconPause = document.getElementById('icon-pause');
 const trackName = document.getElementById('track-name');
+const btnShuffle = document.getElementById('btn-shuffle');
 
-let playlist = [], idx = 0, hasMusic = false;
+let playlist = [], idx = 0, hasMusic = false, shuffleOn = true;
 
 function setPlayIcon(p) {
   iconPlay.style.display  = p ? 'none'  : 'block';
@@ -461,13 +574,46 @@ function setMuteIcon(m) {
   iconMuted.style.display = m ? 'block' : 'none';
   volSlider.style.opacity = m ? '0.3' : '1';
 }
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
+function doShuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+    [a[i], a[j]] = [a[j], a[i]];
   }
-  return arr;
+  return a;
 }
+
+// ── Session save / restore ────────────────────────────────────────────────────
+const SESSION_KEY = 'wcam_music';
+function saveSession() {
+  if (!hasMusic) return;
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      track:   playlist[idx],
+      volume:  audio.volume,
+      muted:   audio.muted,
+      shuffle: shuffleOn,
+    }));
+  } catch(e) {}
+}
+function restoreSession(tracks) {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY));
+    if (!s) return { startIdx: 0 };
+    // restore volume
+    audio.volume = s.volume ?? 1;
+    volSlider.value = audio.volume;
+    audio.muted = s.muted ?? false;
+    setMuteIcon(audio.muted);
+    // restore shuffle state
+    shuffleOn = s.shuffle ?? true;
+    btnShuffle.classList.toggle('active', shuffleOn);
+    // find saved track
+    const i = tracks.indexOf(s.track);
+    return { startIdx: i >= 0 ? i : 0 };
+  } catch(e) { return { startIdx: 0 }; }
+}
+
 function loadTrack(i) {
   idx = ((i % playlist.length) + playlist.length) % playlist.length;
   const file = playlist[idx];
@@ -475,11 +621,13 @@ function loadTrack(i) {
   trackName.textContent = file.replace(/\.[^.]+$/, '');
   trackName.classList.remove('placeholder');
   audio.play().catch(() => {});
+  saveSession();
 }
 
 audio.addEventListener('ended', () => loadTrack(idx + 1));
 audio.addEventListener('play',  () => setPlayIcon(true));
-audio.addEventListener('pause', () => { if (hasMusic) setPlayIcon(false); });
+audio.addEventListener('pause', () => { if (hasMusic) setPlayIcon(false); saveSession(); });
+audio.addEventListener('volumechange', saveSession);
 
 document.getElementById('btn-play').addEventListener('click', () => {
   if (!hasMusic) return;
@@ -491,11 +639,21 @@ document.getElementById('btn-next').addEventListener('click', () => { if (hasMus
 document.getElementById('btn-mute').addEventListener('click', () => {
   audio.muted = !audio.muted;
   setMuteIcon(audio.muted);
+  saveSession();
 });
 volSlider.addEventListener('input', () => {
   audio.volume = parseFloat(volSlider.value);
   audio.muted = audio.volume === 0;
   setMuteIcon(audio.muted);
+});
+
+btnShuffle.addEventListener('click', () => {
+  shuffleOn = !shuffleOn;
+  btnShuffle.classList.toggle('active', shuffleOn);
+  const cur = playlist[idx];
+  playlist = shuffleOn ? doShuffle(playlist) : playlist.slice().sort();
+  idx = playlist.indexOf(cur);
+  saveSession();
 });
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
@@ -518,12 +676,68 @@ fetch('/api/music')
       return;
     }
     hasMusic = true;
-    playlist = shuffle(tracks);
-    audio.src = '/static/music/' + encodeURIComponent(playlist[0]);
-    trackName.textContent = playlist[0].replace(/\.[^.]+$/, '');
+    const { startIdx } = restoreSession(tracks);
+    playlist = shuffleOn ? doShuffle(tracks) : [...tracks];
+    // put restored track at current position
+    if (startIdx > 0) {
+      const saved = tracks[startIdx];
+      const pi = playlist.indexOf(saved);
+      if (pi >= 0) idx = pi;
+    }
+    const file = playlist[idx];
+    audio.src = '/static/music/' + encodeURIComponent(file);
+    trackName.textContent = file.replace(/\.[^.]+$/, '');
     trackName.classList.remove('placeholder');
     audio.play().catch(() => {});
   });
+
+// ── Snapshot panel ────────────────────────────────────────────────────────────
+const snapPanel = document.getElementById('snap-panel');
+const snapScroll = document.getElementById('snap-scroll');
+
+function openSnapPanel() {
+  snapPanel.classList.add('open');
+  if (snapScroll.children.length === 0) loadSnapshots();
+}
+function closeSnapPanel() { snapPanel.classList.remove('open'); }
+
+document.getElementById('btn-snaps').addEventListener('click', openSnapPanel);
+document.getElementById('btn-snaps-close').addEventListener('click', closeSnapPanel);
+
+// close panel on outside click
+document.addEventListener('click', e => {
+  if (snapPanel.classList.contains('open') &&
+      !snapPanel.contains(e.target) &&
+      e.target.id !== 'btn-snaps') {
+    closeSnapPanel();
+  }
+});
+
+function loadSnapshots() {
+  fetch('/api/snapshots')
+    .then(r => r.json())
+    .then(days => {
+      snapScroll.innerHTML = '';
+      if (!days.length) {
+        snapScroll.innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);font-size:10px">no snapshots yet</div>';
+        return;
+      }
+      days.forEach(day => {
+        const el = document.createElement('div');
+        el.className = 'snap-day';
+        const label = day.date === new Date().toISOString().slice(0,10) ? 'TODAY' : day.date;
+        el.innerHTML = `
+          <div class="snap-day-label">${label}</div>
+          <img class="snap-pod" loading="lazy"
+               src="/static/snapshots/${day.date}/${day.pod}"
+               title="${day.date} — picture of the day">
+          <div class="snap-count">${day.count} snapshot${day.count !== 1 ? 's' : ''}</div>
+        `;
+        snapScroll.appendChild(el);
+      });
+    })
+    .catch(() => {});
+}
 </script>
 </body>
 </html>
