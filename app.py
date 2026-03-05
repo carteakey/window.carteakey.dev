@@ -12,12 +12,13 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# 1080p@10fps: MJPEG is software-encoded on Pi 4B. 30fps pegs CPU at 89%/83°C.
-# 10fps gives full resolution with ~1/3 the encode load. A window view barely
-# moves so 10fps is imperceptible vs 30fps. Add the fan to reclaim headroom.
+# 1080p@15fps: MJPEG is software-encoded on Pi 4B (~35% CPU). Hardware MJPEG
+# is possible via /dev/video11 (mjpeg_v4l2m2m) but needs a 2-process pipeline.
+# Hardware H264→HLS (~3% CPU) is the cleanest path but adds 5-10s latency.
+# With fan installed temps drop to ~45°C — this config is stable as-is.
 WIDTH = 1920
 HEIGHT = 1080
-FPS = 10
+FPS = 15
 PORT = 8765
 LOCATION = "Toronto, Canada"
 LAT, LON = 43.70, -79.42
