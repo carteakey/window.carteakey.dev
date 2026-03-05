@@ -24,6 +24,7 @@ LOCATION = "Toronto, Canada"
 LAT, LON = 43.70, -79.42
 SNAPSHOT_INTERVAL = 30  # seconds
 SNAPSHOT_DIR = Path("static/snapshots")
+TIMELAPSE_DIR = Path("static/timelapse")
 MUSIC_DIR = Path("static/music")
 WEATHER_TTL = 900  # 15 min cache
 
@@ -31,6 +32,9 @@ WEATHER_TTL = 900  # 15 min cache
 current_frame: bytes | None = None
 frame_lock = threading.Lock()
 frame_event = threading.Event()
+
+camera_proc: subprocess.Popen | None = None
+snapshot_in_progress = threading.Event()  # set while rpicam-still is running
 
 viewer_count = 0
 viewer_lock = threading.Lock()
@@ -67,7 +71,7 @@ def fetch_weather():
     return {
         "temp": round(c["temperature_2m"]),
         "desc": WMO_DESC.get(c["weather_code"], ""),
-        "sunrise": daily["sunrise"][0],  # "2026-03-05T07:12"
+        "sunrise": daily["sunrise"][0],
         "sunset":  daily["sunset"][0],
     }
 
@@ -86,7 +90,7 @@ def get_weather():
 
 # ── Camera capture thread ─────────────────────────────────────────────────────
 def capture_thread():
-    global current_frame
+    global current_frame, camera_proc
     cmd = [
         "rpicam-vid",
         "-t", "0",
@@ -98,7 +102,12 @@ def capture_thread():
         "-o", "-",
     ]
     while True:
+        # Wait if a snapshot is being taken
+        while snapshot_in_progress.is_set():
+            time.sleep(0.2)
+
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        camera_proc = proc
         buf = b""
         try:
             while True:
@@ -121,22 +130,51 @@ def capture_thread():
             pass
         finally:
             proc.kill()
+            camera_proc = None
         time.sleep(2)
 
 
-# ── Snapshot thread ───────────────────────────────────────────────────────────
+# ── Snapshot thread (full-res via rpicam-still) ───────────────────────────────
 def snapshot_thread():
     while True:
         time.sleep(SNAPSHOT_INTERVAL)
-        with frame_lock:
-            frame = current_frame
-        if frame is None:
-            continue
-        today = datetime.now().strftime("%Y-%m-%d")
-        ts = datetime.now().strftime("%H%M%S")
-        day_dir = SNAPSHOT_DIR / today
-        day_dir.mkdir(parents=True, exist_ok=True)
-        (day_dir / f"{ts}.jpg").write_bytes(frame)
+
+        # Signal capture_thread to not restart while we use the camera
+        snapshot_in_progress.set()
+
+        # Terminate the running stream
+        proc = camera_proc
+        if proc:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            ts = datetime.now().strftime("%H%M%S")
+            day_dir = SNAPSHOT_DIR / today
+            day_dir.mkdir(parents=True, exist_ok=True)
+            out = day_dir / f"{ts}.jpg"
+
+            subprocess.run(
+                [
+                    "rpicam-still",
+                    "-o", str(out),
+                    "--width", "2592",
+                    "--height", "1944",
+                    "--timeout", "1500",
+                    "--nopreview",
+                ],
+                timeout=8,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        finally:
+            # Release camera — capture_thread will restart the stream
+            snapshot_in_progress.clear()
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -214,6 +252,7 @@ def manifest():
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    TIMELAPSE_DIR.mkdir(parents=True, exist_ok=True)
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
     threading.Thread(target=capture_thread, daemon=True).start()

@@ -1,0 +1,10 @@
+[Unit]
+Description=Generate daily timelapse from window snapshots
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/services/window.carteakey.dev
+ExecStart=/usr/bin/python3 make_timelapse.py
+StandardOutput=journal
+StandardError=journal

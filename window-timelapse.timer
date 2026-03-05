@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily timelapse generation at midnight
+Requires=window-timelapse.service
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
