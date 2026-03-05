@@ -279,6 +279,30 @@
   }
   #btn-snaps:hover { color: rgba(255,255,255,0.9); }
 
+  /* ── Connecting overlay ────────────────────────────────────────────────── */
+  #connect-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    color: rgba(255,255,255,0.45);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    pointer-events: none;
+  }
+  #connect-overlay .spinner {
+    width: 20px; height: 20px;
+    border: 2px solid rgba(255,255,255,0.12);
+    border-top-color: rgba(255,255,255,0.5);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   /* ── Rotate overlay (portrait mobile) ─────────────────────────────────── */
   #rotate-overlay {
     display: none;
@@ -402,6 +426,12 @@
   <div id="snap-scroll"></div>
 </div>
 
+<!-- connecting overlay -->
+<div id="connect-overlay">
+  <div class="spinner"></div>
+  <span>connecting</span>
+</div>
+
 <!-- portrait warning -->
 <div id="rotate-overlay">
   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -479,7 +509,17 @@ fetch('/api/weather')
 
 // ── HLS stream ────────────────────────────────────────────────────────────────
 const HLS_SRC = '/hls/stream.m3u8';
-let hls;
+const connectOverlay = document.getElementById('connect-overlay');
+let hls, hlsFailing = false;
+
+function showConnecting() {
+  if (!hlsFailing) { hlsFailing = true; connectOverlay.style.display = 'flex'; }
+}
+function hideConnecting() {
+  hlsFailing = false; connectOverlay.style.display = 'none';
+}
+
+feed.addEventListener('playing', hideConnecting);
 
 function initHLS() {
   if (typeof Hls !== 'undefined' && Hls.isSupported()) {
@@ -494,12 +534,13 @@ function initHLS() {
     hls.attachMedia(feed);
     hls.on(Hls.Events.MANIFEST_PARSED, () => feed.play().catch(() => {}));
     hls.on(Hls.Events.ERROR, (_, data) => {
-      if (data.fatal) setTimeout(initHLS, 3000);
+      if (data.fatal) { showConnecting(); setTimeout(initHLS, 3000); }
     });
   } else if (feed.canPlayType('application/vnd.apple.mpegurl')) {
     // Native HLS — iOS Safari
     feed.src = HLS_SRC;
     feed.play().catch(() => {});
+    feed.onerror = () => { showConnecting(); setTimeout(initHLS, 3000); };
   }
 }
 

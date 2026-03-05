@@ -30,13 +30,18 @@ SNAPSHOT_DIR = Path("static/snapshots")
 TIMELAPSE_DIR = Path("static/timelapse")
 MUSIC_DIR    = Path("static/music")
 WEATHER_TTL  = 900  # 15 min cache
+VIEWER_TTL   = 60  # seconds — client heartbeats every 30s
+IDLE_TIMEOUT = 120 # seconds with no viewers before pausing stream
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 active_viewers: dict = {}   # session_id → last_seen timestamp
 viewer_lock     = threading.Lock()
 stream_generation = 0
 weather_cache: dict = {"data": None, "ts": 0.0}
-VIEWER_TTL = 60  # seconds — client heartbeats every 30s
+stream_active   = threading.Event()  # set = stream should run, clear = idle
+_stream_cam     = None
+_stream_ffmpeg  = None
+_stream_lock    = threading.Lock()
 
 app = Flask(__name__)
 
@@ -86,10 +91,13 @@ def get_weather():
 
 # ── Capture thread: rpicam-vid → ffmpeg → HLS ─────────────────────────────────
 def capture_thread():
-    global stream_generation
+    global stream_generation, _stream_cam, _stream_ffmpeg
     HLS_DIR.mkdir(parents=True, exist_ok=True)
 
     while True:
+        stream_active.wait()  # block until a viewer arrives
+
+        print("Stream starting…")
         cam = subprocess.Popen(
             [
                 "rpicam-vid", "-t", "0",
@@ -120,19 +128,56 @@ def capture_thread():
             stderr=subprocess.DEVNULL,
         )
         cam.stdout.close()  # let ffmpeg own the pipe
+        with _stream_lock:
+            _stream_cam = cam
+            _stream_ffmpeg = ffmpeg
         stream_generation += 1
 
         ffmpeg.wait()
         cam.kill()
-        time.sleep(2)
+        with _stream_lock:
+            _stream_cam = None
+            _stream_ffmpeg = None
+
+        if stream_active.is_set():
+            time.sleep(2)  # brief pause before crash-restart
+        # else: idle — loop back and wait on stream_active
+
+
+# ── Watchdog thread: pause stream when no viewers ─────────────────────────────
+def watchdog_thread():
+    idle_since = None
+    while True:
+        time.sleep(15)
+        now = time.time()
+        with viewer_lock:
+            stale = [k for k, t in active_viewers.items() if now - t > VIEWER_TTL]
+            for k in stale:
+                del active_viewers[k]
+            count = len(active_viewers)
+
+        if count > 0:
+            idle_since = None
+        else:
+            if idle_since is None:
+                idle_since = now
+            elif now - idle_since >= IDLE_TIMEOUT and stream_active.is_set():
+                print("No viewers — pausing stream")
+                stream_active.clear()
+                with _stream_lock:
+                    if _stream_ffmpeg:
+                        _stream_ffmpeg.kill()
+                    if _stream_cam:
+                        _stream_cam.kill()
 
 
 # ── Snapshot thread: extract frame from latest complete .ts segment ───────────
 def snapshot_thread():
-    # Wait for HLS to produce some segments before starting
     time.sleep(10)
     while True:
         time.sleep(SNAPSHOT_INTERVAL)
+        if not stream_active.is_set():
+            continue
         ts_files = sorted(HLS_DIR.glob("seg*.ts"))
         if len(ts_files) < 2:
             continue
@@ -194,6 +239,8 @@ def heartbeat():
     if sid:
         with viewer_lock:
             active_viewers[sid] = time.time()
+        if not stream_active.is_set():
+            stream_active.set()  # wake capture_thread
     return "", 204
 
 
@@ -205,7 +252,7 @@ def viewers():
         for k in stale:
             del active_viewers[k]
         count = len(active_viewers)
-    return jsonify({"count": count, "gen": stream_generation})
+    return jsonify({"count": count, "gen": stream_generation, "streaming": stream_active.is_set()})
 
 
 @app.route("/api/snapshots")
@@ -259,6 +306,7 @@ if __name__ == "__main__":
 
     threading.Thread(target=capture_thread, daemon=True).start()
     threading.Thread(target=snapshot_thread, daemon=True).start()
+    threading.Thread(target=watchdog_thread, daemon=True).start()
 
     print(f"window.carteakey.dev running on http://0.0.0.0:{PORT}")
     app.run(host="0.0.0.0", port=PORT, threaded=True)
