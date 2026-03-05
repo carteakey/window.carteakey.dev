@@ -1,0 +1,14 @@
+[Unit]
+Description=window.carteakey.dev camera stream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/services/window.carteakey.dev
+ExecStart=/usr/bin/python3 app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+static/snapshots/
+static/timelapse/
+static/music/
+__pycache__/
+*.pyc
+.claude/

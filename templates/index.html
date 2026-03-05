@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>window.carteakey.dev</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    overflow: hidden;
+    font-family: 'Courier New', Courier, monospace;
+    color: #eee;
+    user-select: none;
+    cursor: none;
+  }
+  body.ui-visible { cursor: default; }
+
+  #feed {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+    display: block;
+    transition: filter 2s ease;
+  }
+
+  /* ── UI fade wrapper ───────────────────────────────────────────────────── */
+  #ui {
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    pointer-events: none;
+  }
+  #ui.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* ── Shared surface ────────────────────────────────────────────────────── */
+  .surface {
+    position: fixed;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.18);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-radius: 8px;
+    color: rgba(255,255,255,0.82);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── Top-left: title + live ────────────────────────────────────────────── */
+  #title-bar {
+    top: 18px;
+    left: 20px;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #title-bar .name {
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 0.1em;
+  }
+  #live-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: rgba(255,255,255,0.5);
+  }
+  #live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #e74c3c;
+    animation: pulse 2s infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+  #viewer-count { color: rgba(255,255,255,0.4); }
+
+  /* ── Top-right: location + weather + clock ─────────────────────────────── */
+  #info-bar {
+    top: 18px;
+    right: 20px;
+    padding: 6px 14px;
+    text-align: right;
+    border-radius: 8px;
+    line-height: 1.8;
+  }
+  #info-bar .city    { font-size: 12px; letter-spacing: 0.07em; }
+  #info-bar .weather { font-size: 10px; color: rgba(255,255,255,0.55); }
+  #info-bar .datetime {
+    font-size: 9px;
+    color: rgba(255,255,255,0.38);
+    letter-spacing: 0.06em;
+  }
+
+  /* ── Bottom-left: player ───────────────────────────────────────────────── */
+  #player {
+    bottom: 20px;
+    left: 20px;
+    padding: 7px 13px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 400px;
+  }
+
+  .ctrl-btn {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.6);
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+  .ctrl-btn:hover { color: #fff; }
+  .ctrl-btn svg { display: block; }
+
+  #track-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: rgba(255,255,255,0.5);
+  }
+  #track-name.placeholder { color: rgba(255,255,255,0.22); font-style: italic; }
+
+  #vol-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 60px;
+    height: 2px;
+    background: rgba(255,255,255,0.22);
+    border-radius: 1px;
+    outline: none;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  #vol-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.75);
+    cursor: pointer;
+  }
+  #vol-slider::-moz-range-thumb {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.75);
+    border: none;
+    cursor: pointer;
+  }
+
+  /* ── Bottom-right: fullscreen ──────────────────────────────────────────── */
+  #controls {
+    bottom: 20px;
+    right: 20px;
+    padding: 7px 10px;
+    display: flex;
+    align-items: center;
+  }
+
+  /* ── Rotate overlay (portrait mobile) ─────────────────────────────────── */
+  #rotate-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(0,0,0,0.88);
+    backdrop-filter: blur(12px);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    color: rgba(255,255,255,0.7);
+    font-size: 13px;
+    letter-spacing: 0.06em;
+  }
+  #rotate-overlay svg { opacity: 0.5; animation: rotate-hint 2.5s ease-in-out infinite; }
+  @keyframes rotate-hint {
+    0%, 100% { transform: rotate(0deg); }
+    40%       { transform: rotate(90deg); }
+    60%       { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+
+<img id="feed" src="/stream" alt="live feed">
+
+<div id="ui">
+  <!-- top-left -->
+  <div class="surface" id="title-bar">
+    <span class="name">window.carteakey.dev</span>
+    <div id="live-badge">
+      <span id="live-dot"></span>
+      LIVE
+      <span id="viewer-count"></span>
+    </div>
+  </div>
+
+  <!-- top-right -->
+  <div class="surface" id="info-bar">
+    <div class="city">{{ location }}</div>
+    <div class="weather" id="weather-line">—</div>
+    <div class="datetime" id="clock"></div>
+  </div>
+
+  <audio id="audio" preload="none"></audio>
+
+  <!-- bottom-left player -->
+  <div class="surface" id="player">
+    <button class="ctrl-btn" id="btn-prev" title="Previous">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="4" x2="5" y2="20"/>
+      </svg>
+    </button>
+    <button class="ctrl-btn" id="btn-play" title="Play / Pause">
+      <svg id="icon-play" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+      <svg id="icon-pause" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="display:none">
+        <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+      </svg>
+    </button>
+    <button class="ctrl-btn" id="btn-next" title="Next">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="4" x2="19" y2="20"/>
+      </svg>
+    </button>
+
+    <span id="track-name" class="placeholder">no music</span>
+
+    <button class="ctrl-btn" id="btn-mute" title="Mute / Unmute">
+      <svg id="icon-vol" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+      </svg>
+      <svg id="icon-muted" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+        <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
+      </svg>
+    </button>
+
+    <input type="range" id="vol-slider" min="0" max="1" step="0.02" value="1" title="Volume">
+  </div>
+
+  <!-- bottom-right -->
+  <div class="surface" id="controls">
+    <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen">
+      <svg id="icon-maximize" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+      </svg>
+      <svg id="icon-minimize" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+        <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
+      </svg>
+    </button>
+  </div>
+</div><!-- #ui -->
+
+<!-- portrait warning -->
+<div id="rotate-overlay">
+  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="2" width="16" height="20" rx="2"/>
+    <path d="M9 18h6"/>
+  </svg>
+  rotate for best experience
+</div>
+
+<script>
+// ── Orientation overlay ───────────────────────────────────────────────────────
+const rotateOverlay = document.getElementById('rotate-overlay');
+function checkOrientation() {
+  const mobile = ('ontouchstart' in window) && window.screen.width < 1024;
+  const portrait = window.innerHeight > window.innerWidth;
+  rotateOverlay.style.display = (mobile && portrait) ? 'flex' : 'none';
+}
+window.addEventListener('resize', checkOrientation);
+window.addEventListener('orientationchange', checkOrientation);
+checkOrientation();
+
+// ── Auto-hide UI ──────────────────────────────────────────────────────────────
+const ui = document.getElementById('ui');
+let hideTimer;
+
+function showUI() {
+  ui.classList.add('visible');
+  document.body.classList.add('ui-visible');
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(hideUI, 3000);
+}
+function hideUI() {
+  ui.classList.remove('visible');
+  document.body.classList.remove('ui-visible');
+}
+
+document.addEventListener('mousemove', showUI);
+document.addEventListener('mousedown', showUI);
+document.addEventListener('touchstart', showUI, { passive: true });
+document.addEventListener('keydown', showUI);
+
+ui.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+ui.addEventListener('mouseleave', () => { hideTimer = setTimeout(hideUI, 1500); });
+
+// ── Clock ─────────────────────────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Toronto' });
+  const date = now.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Toronto' }).toUpperCase();
+  document.getElementById('clock').textContent = `${date} · ${time}`;
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// ── Weather ───────────────────────────────────────────────────────────────────
+const feed = document.getElementById('feed');
+
+function applyNightMode(sunrise, sunset) {
+  if (!sunrise || !sunset) return;
+  const now = new Date();
+  const sr = new Date(sunrise);
+  const ss = new Date(sunset);
+  const isNight = now < sr || now > ss;
+  feed.style.filter = isNight ? 'brightness(0.82)' : '';
+}
+
+fetch('/api/weather')
+  .then(r => r.json())
+  .then(d => {
+    const line = d.temp !== '--' ? `${d.temp}°C · ${d.desc}` : '—';
+    document.getElementById('weather-line').textContent = line;
+    applyNightMode(d.sunrise, d.sunset);
+  })
+  .catch(() => {});
+
+// ── Stream reconnect ──────────────────────────────────────────────────────────
+feed.addEventListener('error', () => {
+  setTimeout(() => { feed.src = '/stream?' + Date.now(); }, 3000);
+});
+
+// ── Viewer count (poll every 10s) ─────────────────────────────────────────────
+const viewerEl = document.getElementById('viewer-count');
+function updateViewers() {
+  fetch('/api/viewers')
+    .then(r => r.json())
+    .then(d => {
+      viewerEl.textContent = d.count > 0 ? `· ${d.count}` : '';
+    })
+    .catch(() => {});
+}
+updateViewers();
+setInterval(updateViewers, 10000);
+
+// ── Fullscreen ────────────────────────────────────────────────────────────────
+document.getElementById('btn-fullscreen').addEventListener('click', () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+  else document.exitFullscreen();
+});
+document.addEventListener('fullscreenchange', () => {
+  const full = !!document.fullscreenElement;
+  document.getElementById('icon-maximize').style.display = full ? 'none' : 'block';
+  document.getElementById('icon-minimize').style.display = full ? 'block' : 'none';
+  if (full && screen.orientation?.lock) screen.orientation.lock('landscape').catch(() => {});
+});
+
+// ── Audio ─────────────────────────────────────────────────────────────────────
+const audio     = document.getElementById('audio');
+const volSlider = document.getElementById('vol-slider');
+const iconVol   = document.getElementById('icon-vol');
+const iconMuted = document.getElementById('icon-muted');
+const iconPlay  = document.getElementById('icon-play');
+const iconPause = document.getElementById('icon-pause');
+const trackName = document.getElementById('track-name');
+
+let playlist = [], idx = 0, hasMusic = false;
+
+function setPlayIcon(p) {
+  iconPlay.style.display  = p ? 'none'  : 'block';
+  iconPause.style.display = p ? 'block' : 'none';
+}
+function setMuteIcon(m) {
+  iconVol.style.display   = m ? 'none'  : 'block';
+  iconMuted.style.display = m ? 'block' : 'none';
+  volSlider.style.opacity = m ? '0.3' : '1';
+}
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+function loadTrack(i) {
+  idx = ((i % playlist.length) + playlist.length) % playlist.length;
+  const file = playlist[idx];
+  audio.src = '/static/music/' + encodeURIComponent(file);
+  trackName.textContent = file.replace(/\.[^.]+$/, '');
+  trackName.classList.remove('placeholder');
+  audio.play().catch(() => {});
+}
+
+audio.addEventListener('ended', () => loadTrack(idx + 1));
+audio.addEventListener('play',  () => setPlayIcon(true));
+audio.addEventListener('pause', () => { if (hasMusic) setPlayIcon(false); });
+
+document.getElementById('btn-play').addEventListener('click', () => {
+  if (!hasMusic) return;
+  audio.paused ? audio.play() : audio.pause();
+});
+document.getElementById('btn-prev').addEventListener('click', () => { if (hasMusic) loadTrack(idx - 1); });
+document.getElementById('btn-next').addEventListener('click', () => { if (hasMusic) loadTrack(idx + 1); });
+
+document.getElementById('btn-mute').addEventListener('click', () => {
+  audio.muted = !audio.muted;
+  setMuteIcon(audio.muted);
+});
+volSlider.addEventListener('input', () => {
+  audio.volume = parseFloat(volSlider.value);
+  audio.muted = audio.volume === 0;
+  setMuteIcon(audio.muted);
+});
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target !== document.body) return;
+  if (e.code === 'Space')      { e.preventDefault(); if (hasMusic) audio.paused ? audio.play() : audio.pause(); }
+  if (e.code === 'KeyM')       { audio.muted = !audio.muted; setMuteIcon(audio.muted); }
+  if (e.code === 'KeyF')       { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); }
+  if (e.code === 'ArrowRight') { if (hasMusic) loadTrack(idx + 1); }
+  if (e.code === 'ArrowLeft')  { if (hasMusic) loadTrack(idx - 1); }
+});
+
+// ── Music init ────────────────────────────────────────────────────────────────
+fetch('/api/music')
+  .then(r => r.json())
+  .then(tracks => {
+    if (!tracks.length) {
+      trackName.textContent = 'drop mp3s in static/music/';
+      trackName.classList.add('placeholder');
+      return;
+    }
+    hasMusic = true;
+    playlist = shuffle(tracks);
+    audio.src = '/static/music/' + encodeURIComponent(playlist[0]);
+    trackName.textContent = playlist[0].replace(/\.[^.]+$/, '');
+    trackName.classList.remove('placeholder');
+    audio.play().catch(() => {});
+  });
+</script>
+</body>
+</html>
