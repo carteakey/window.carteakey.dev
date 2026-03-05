@@ -12,9 +12,11 @@ Getting the camera working took about ten minutes. The lens ships slightly out o
 
 ## Streaming
 
-The Pi runs a Python/Flask server that pipes `rpicam-vid` output as an MJPEG stream. Each client gets the same pre-encoded frame via a shared `threading.Event` — so CPU usage is flat regardless of viewer count. The real bottleneck is upstream bandwidth, not the Pi.
+The Pi runs a Python/Flask server that pipes `rpicam-vid` output through `ffmpeg` into an HLS stream. The camera's VPU hardware-encodes H264 directly — the CPU just shuttles bytes into segment files. Total CPU across both processes: ~38%. Temperature with no fan: ~78°C. Fine. With a fan: ~45°C.
 
-MJPEG at 1080p is software-encoded on the Pi 4B (the VPU only hardware-accelerates H264). Running at 15fps keeps CPU around 35% and the stream latency at near-zero, which matters more than framerate for a window view.
+The HLS segments (`static/hls/seg*.ts`) are 2 seconds each, rolling window of 5. `ffmpeg` deletes old ones automatically. The frontend uses `hls.js` for playback with built-in error recovery — if the stream hiccups, it resumes seamlessly from the buffer. Latency is ~6-8 seconds, which is irrelevant for a window view.
+
+This approach also happens to be Cloudflare Tunnel ToS compliant. Raw video streaming over tunnels is not — but serving 2MB static files every 2 seconds is just normal web traffic.
 
 ## The Site
 
@@ -30,12 +32,14 @@ Everything rides on a Cloudflare tunnel. No port forwarding, no exposed IP, no h
 
 ## Snapshots and Timelapse
 
-Every 30 seconds the server briefly pauses the stream, fires `rpicam-still` at full **2592×1944** resolution, then restarts. Clients auto-reconnect seamlessly. The snapshots accumulate in dated folders and get compiled into daily timelapse MP4s at midnight — so at the end of each day there's a compressed record of whatever happened outside the window.
+Every 30 seconds a background thread pulls the second-to-last `.ts` segment (which is always fully written) and extracts one frame with `ffmpeg`. No stream interruption. The snapshots go into `static/snapshots/YYYY-MM-DD/HHMMSS.jpg`.
+
+At midnight a systemd timer runs `make_timelapse.py`, which walks every completed day's folder, feeds the JPEGs to `ffmpeg` as a concat list, and outputs a `libx264` MP4 at 24fps. After confirming the file is good, it deletes the raw JPEGs. The timelapse for a full day of 30-second snapshots — 2880 frames — compresses down to a few hundred MB.
 
 ## What's Next
 
-Hardware H264 encoding via `h264_v4l2m2m` would drop CPU to ~3% and let the stream run at 30fps comfortably. The latency tradeoff (HLS adds ~8 seconds) is acceptable for a window view — nobody needs sub-second latency to watch pigeons.
+Submitting a clip to the actual WindowSwap community. Their submission format requires a 10-minute window video, which is straightforward to generate from the HLS stream. After that, mostly just leaving it running and seeing what the timelapses look like across seasons.
 
-The plan is to submit a clip to the actual WindowSwap community once the view is framed properly. In the meantime it lives at [window.carteakey.dev](https://window.carteakey.dev).
+It lives at [window.carteakey.dev](https://window.carteakey.dev).
 
 Code on GitHub soon.
