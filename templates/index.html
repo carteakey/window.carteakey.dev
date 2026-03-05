@@ -2,8 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>window.carteakey.dev</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
+<meta name="apple-mobile-web-app-title" content="window">
+<meta name="theme-color" content="#000000">
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -42,13 +47,14 @@
   .surface {
     position: fixed;
     z-index: 10;
-    background: rgba(0, 0, 0, 0.18);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: rgba(0, 0, 0, 0.38);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     border-radius: 8px;
-    color: rgba(255,255,255,0.82);
-    font-size: 11px;
+    color: rgba(255,255,255,0.92);
+    font-size: 12px;
     letter-spacing: 0.05em;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.7);
   }
 
   /* ── Top-left: title + live ────────────────────────────────────────────── */
@@ -69,9 +75,9 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.12em;
-    color: rgba(255,255,255,0.5);
+    color: rgba(255,255,255,0.65);
   }
   #live-dot {
     width: 6px;
@@ -97,10 +103,10 @@
     line-height: 1.8;
   }
   #info-bar .city    { font-size: 12px; letter-spacing: 0.07em; }
-  #info-bar .weather { font-size: 10px; color: rgba(255,255,255,0.55); }
+  #info-bar .weather { font-size: 10px; color: rgba(255,255,255,0.72); }
   #info-bar .datetime {
-    font-size: 9px;
-    color: rgba(255,255,255,0.38);
+    font-size: 10px;
+    color: rgba(255,255,255,0.55);
     letter-spacing: 0.06em;
   }
 
@@ -137,9 +143,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 11px;
-    color: rgba(255,255,255,0.5);
+    color: rgba(255,255,255,0.75);
   }
-  #track-name.placeholder { color: rgba(255,255,255,0.22); font-style: italic; }
+  #track-name.placeholder { color: rgba(255,255,255,0.38); font-style: italic; }
 
   #vol-slider {
     -webkit-appearance: none;
@@ -369,10 +375,41 @@ updateViewers();
 setInterval(updateViewers, 10000);
 
 // ── Fullscreen ────────────────────────────────────────────────────────────────
-document.getElementById('btn-fullscreen').addEventListener('click', () => {
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+const isStandalone = window.navigator.standalone === true;
+const btnFS = document.getElementById('btn-fullscreen');
+
+// iOS tip tooltip
+const fsTip = document.createElement('div');
+fsTip.style.cssText = `
+  position:fixed; bottom:64px; right:20px; z-index:50;
+  background:rgba(0,0,0,0.7); backdrop-filter:blur(8px);
+  color:rgba(255,255,255,0.9); font-family:'Courier New',monospace;
+  font-size:11px; letter-spacing:0.04em; padding:8px 14px;
+  border-radius:8px; pointer-events:none; opacity:0;
+  transition:opacity 0.3s; max-width:180px; text-align:center; line-height:1.5;
+`;
+fsTip.textContent = 'tap Share → Add to Home Screen for fullscreen';
+document.body.appendChild(fsTip);
+
+function showFsTip() {
+  fsTip.style.opacity = '1';
+  clearTimeout(fsTip._t);
+  fsTip._t = setTimeout(() => { fsTip.style.opacity = '0'; }, 3500);
+}
+
+btnFS.addEventListener('click', () => {
+  if (isIOS) {
+    showFsTip();
+    return;
+  }
   if (!document.fullscreenElement) document.documentElement.requestFullscreen();
   else document.exitFullscreen();
 });
+
+// hide fullscreen btn if already running as PWA standalone on iOS
+if (isIOS && isStandalone) btnFS.parentElement.style.display = 'none';
+
 document.addEventListener('fullscreenchange', () => {
   const full = !!document.fullscreenElement;
   document.getElementById('icon-maximize').style.display = full ? 'none' : 'block';

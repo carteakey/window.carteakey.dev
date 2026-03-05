@@ -12,11 +12,12 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# 720p@15fps: MJPEG is software-encoded on Pi 4B — 1080p30 pegs all 4 cores
-# and hits 83°C. 720p15 cuts load ~75% while looking identical on a webpage.
-WIDTH = 1280
-HEIGHT = 720
-FPS = 15
+# 1080p@10fps: MJPEG is software-encoded on Pi 4B. 30fps pegs CPU at 89%/83°C.
+# 10fps gives full resolution with ~1/3 the encode load. A window view barely
+# moves so 10fps is imperceptible vs 30fps. Add the fan to reclaim headroom.
+WIDTH = 1920
+HEIGHT = 1080
+FPS = 10
 PORT = 8765
 LOCATION = "Toronto, Canada"
 LAT, LON = 43.70, -79.42
@@ -194,6 +195,19 @@ def weather():
 def viewers():
     with viewer_lock:
         return jsonify({"count": viewer_count})
+
+
+@app.route("/manifest.json")
+def manifest():
+    return jsonify({
+        "name": "window.carteakey.dev",
+        "short_name": "window",
+        "display": "fullscreen",
+        "orientation": "landscape",
+        "background_color": "#000000",
+        "theme_color": "#000000",
+        "start_url": "/",
+    })
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
