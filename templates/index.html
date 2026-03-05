@@ -357,22 +357,33 @@ fetch('/api/weather')
   .catch(() => {});
 
 // ── Stream reconnect ──────────────────────────────────────────────────────────
+// MJPEG img.onerror doesn't fire on stream stalls, only hard failures.
+// We piggyback on the /api/viewers poll — it includes a stream generation
+// counter that increments each time rpicam-vid restarts (i.e. after snapshot).
+// When gen changes, reload the stream src after a short delay.
 feed.addEventListener('error', () => {
-  setTimeout(() => { feed.src = '/stream?' + Date.now(); }, 3000);
+  setTimeout(() => { feed.src = '/stream?' + Date.now(); }, 2000);
 });
 
-// ── Viewer count (poll every 10s) ─────────────────────────────────────────────
+// ── Viewer count + stream reconnect (poll every 3s) ───────────────────────────
 const viewerEl = document.getElementById('viewer-count');
+let lastGen = null;
+
 function updateViewers() {
   fetch('/api/viewers')
     .then(r => r.json())
     .then(d => {
       viewerEl.textContent = d.count > 0 ? `· ${d.count}` : '';
+      // gen increments each time rpicam-vid restarts after a snapshot pause
+      if (lastGen !== null && d.gen !== lastGen) {
+        setTimeout(() => { feed.src = '/stream?' + Date.now(); }, 500);
+      }
+      lastGen = d.gen;
     })
     .catch(() => {});
 }
 updateViewers();
-setInterval(updateViewers, 10000);
+setInterval(updateViewers, 3000);
 
 // ── Fullscreen ────────────────────────────────────────────────────────────────
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;

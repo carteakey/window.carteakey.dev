@@ -39,6 +39,8 @@ snapshot_in_progress = threading.Event()  # set while rpicam-still is running
 viewer_count = 0
 viewer_lock = threading.Lock()
 
+stream_generation = 0  # increments each time rpicam-vid restarts
+
 weather_cache: dict = {"data": None, "ts": 0.0}
 
 app = Flask(__name__)
@@ -108,6 +110,8 @@ def capture_thread():
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         camera_proc = proc
+        global stream_generation
+        stream_generation += 1
         buf = b""
         try:
             while True:
@@ -233,7 +237,7 @@ def weather():
 @app.route("/api/viewers")
 def viewers():
     with viewer_lock:
-        return jsonify({"count": viewer_count})
+        return jsonify({"count": viewer_count, "gen": stream_generation})
 
 
 @app.route("/manifest.json")
