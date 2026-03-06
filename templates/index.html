@@ -289,8 +289,40 @@
     cursor: pointer; padding: 1px;
     display: flex; align-items: center;
     transition: color 0.15s;
+    pointer-events: auto;
   }
   #btn-snaps:hover { color: rgba(255,255,255,0.9); }
+
+  /* ── Record status surface ─────────────────────────────────────────────── */
+  #rec-status {
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 7px 14px;
+    display: none;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+  }
+  #rec-status.active { display: flex; }
+  #rec-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #e74c3c; flex-shrink: 0;
+    animation: pulse 1s infinite;
+  }
+  #rec-text { font-size: 11px; letter-spacing: 0.08em; color: rgba(255,255,255,0.85); }
+  #rec-bar-wrap {
+    width: 80px; height: 2px;
+    background: rgba(255,255,255,0.15); border-radius: 1px; overflow: hidden;
+  }
+  #rec-bar { height: 100%; background: #e74c3c; width: 0%; transition: width 1s linear; border-radius: 1px; }
+  #rec-download {
+    font-size: 11px; letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.7); text-decoration: none;
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 4px;
+    padding: 2px 8px; transition: color 0.15s, border-color 0.15s;
+  }
+  #rec-download:hover { color: #fff; border-color: rgba(255,255,255,0.6); }
 
   /* ── Connecting overlay ────────────────────────────────────────────────── */
   #connect-overlay {
@@ -413,8 +445,21 @@
     </button>
   </div>
 
+  <!-- bottom-center: recording status -->
+  <div class="surface" id="rec-status">
+    <span id="rec-dot"></span>
+    <span id="rec-text">REC 0:00 / 10:00</span>
+    <div id="rec-bar-wrap"><div id="rec-bar"></div></div>
+    <a id="rec-download" style="display:none">download</a>
+  </div>
+
   <!-- bottom-right -->
   <div class="surface" id="controls">
+    <button class="ctrl-btn" id="btn-record" title="Record 10-min WindowSwap clip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+        <circle cx="12" cy="12" r="8"/>
+      </svg>
+    </button>
     <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen">
       <svg id="icon-maximize" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
@@ -767,6 +812,76 @@ fetch('/api/music')
     audio.play().catch(() => {});
   });
 
+// ── Record ────────────────────────────────────────────────────────────────────
+const recStatus   = document.getElementById('rec-status');
+const recDot      = document.getElementById('rec-dot');
+const recText     = document.getElementById('rec-text');
+const recBar      = document.getElementById('rec-bar');
+const recDownload = document.getElementById('rec-download');
+const btnRecord   = document.getElementById('btn-record');
+let recPollTimer  = null;
+
+function fmtSecs(s) {
+  s = Math.floor(s);
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+}
+
+function updateRecUI(d) {
+  if (d.status === 'idle') {
+    recStatus.classList.remove('active');
+    btnRecord.style.color = '';
+    return;
+  }
+  recStatus.classList.add('active');
+  if (d.status === 'recording') {
+    btnRecord.style.color = '#e74c3c';
+    recDot.style.display = 'block';
+    recDownload.style.display = 'none';
+    const elapsed = RECORD_DURATION * d.progress / 100;
+    recText.textContent = `REC ${fmtSecs(elapsed)} / 10:00`;
+    recBar.style.width = d.progress + '%';
+  } else if (d.status === 'done') {
+    btnRecord.style.color = '';
+    recDot.style.display = 'none';
+    recText.textContent = 'CLIP READY';
+    recBar.style.width = '100%';
+    recDownload.style.display = 'inline';
+    recDownload.href = `/api/record/download/${d.file}`;
+    clearInterval(recPollTimer);
+  } else if (d.status === 'error') {
+    recText.textContent = 'REC ERROR';
+    recDot.style.display = 'none';
+    btnRecord.style.color = '';
+    clearInterval(recPollTimer);
+  }
+}
+
+const RECORD_DURATION = 600;
+
+function pollRecStatus() {
+  fetch('/api/record/status').then(r => r.json()).then(updateRecUI).catch(() => {});
+}
+
+btnRecord.addEventListener('click', () => {
+  fetch('/api/record/status').then(r => r.json()).then(d => {
+    if (d.status === 'recording') return;  // already going
+    if (d.status === 'done' || d.status === 'error') {
+      // reset
+      recBar.style.width = '0%';
+    }
+    fetch('/api/record', { method: 'POST' })
+      .then(r => r.json())
+      .then(() => {
+        recPollTimer = setInterval(pollRecStatus, 2000);
+        pollRecStatus();
+      })
+      .catch(() => {});
+  });
+});
+
+// resume polling if already recording on page load
+pollRecStatus();
+
 // ── Snapshot panel ────────────────────────────────────────────────────────────
 const snapPanel = document.getElementById('snap-panel');
 const snapScroll = document.getElementById('snap-scroll');
@@ -777,14 +892,14 @@ function openSnapPanel() {
 }
 function closeSnapPanel() { snapPanel.classList.remove('open'); }
 
-document.getElementById('btn-snaps').addEventListener('click', openSnapPanel);
+document.getElementById('btn-snaps').addEventListener('click', () => { showUI(); snapPanel.classList.contains('open') ? closeSnapPanel() : openSnapPanel(); });
 document.getElementById('btn-snaps-close').addEventListener('click', closeSnapPanel);
 
 // close panel on outside click
 document.addEventListener('click', e => {
   if (snapPanel.classList.contains('open') &&
       !snapPanel.contains(e.target) &&
-      e.target.id !== 'btn-snaps') {
+      !e.target.closest('#btn-snaps')) {
     closeSnapPanel();
   }
 });

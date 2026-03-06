@@ -30,9 +30,11 @@ HLS_DIR      = Path("static/hls")
 SNAPSHOT_DIR = Path("static/snapshots")
 TIMELAPSE_DIR = Path("static/timelapse")
 MUSIC_DIR    = Path("static/music")
-WEATHER_TTL  = 900  # 15 min cache
-VIEWER_TTL   = 60  # seconds — client heartbeats every 30s
-IDLE_TIMEOUT = 120 # seconds with no viewers before pausing stream
+WEATHER_TTL      = 900  # 15 min cache
+VIEWER_TTL       = 60   # seconds — client heartbeats every 30s
+IDLE_TIMEOUT     = 120  # seconds with no viewers before pausing stream
+RECORD_DURATION  = 600  # 10 minutes for WindowSwap submission
+RECORDINGS_DIR   = Path("static/recordings")
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 active_viewers: dict = {}   # session_id → last_seen timestamp
@@ -43,6 +45,9 @@ stream_active   = threading.Event()  # set = stream should run, clear = idle
 _stream_cam     = None
 _stream_ffmpeg  = None
 _stream_lock    = threading.Lock()
+
+_rec_lock = threading.Lock()
+_rec_state: dict = {"status": "idle", "progress": 0.0, "file": None, "error": None}
 
 app = Flask(__name__)
 
@@ -201,6 +206,68 @@ def snapshot_thread():
             timeout=10,
             stderr=subprocess.DEVNULL,
         )
+
+
+# ── Recording (WindowSwap 10-min clip) ────────────────────────────────────────
+def _do_record(output_path: Path):
+    global _rec_state
+    try:
+        proc = subprocess.Popen(
+            [
+                "ffmpeg", "-y",
+                "-i", f"http://localhost:{PORT}/hls/stream.m3u8",
+                "-t", str(RECORD_DURATION),
+                "-c:v", "copy", "-an",      # copy stream, no audio
+                "-progress", "pipe:2",      # structured progress → stderr
+                str(output_path),
+            ],
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+        )
+        for raw in proc.stderr:
+            line = raw.decode(errors="ignore").strip()
+            if line.startswith("out_time_us="):
+                try:
+                    elapsed = int(line.split("=")[1]) / 1_000_000
+                    with _rec_lock:
+                        _rec_state["progress"] = min(99.0, elapsed / RECORD_DURATION * 100)
+                except ValueError:
+                    pass
+        proc.wait()
+        if proc.returncode == 0:
+            with _rec_lock:
+                _rec_state.update({"status": "done", "progress": 100.0, "file": output_path.name})
+        else:
+            with _rec_lock:
+                _rec_state.update({"status": "error", "error": "ffmpeg failed"})
+    except Exception as e:
+        with _rec_lock:
+            _rec_state.update({"status": "error", "error": str(e)})
+
+
+@app.route("/api/record", methods=["POST"])
+def start_record():
+    global _rec_state
+    with _rec_lock:
+        if _rec_state["status"] == "recording":
+            return jsonify({"error": "already recording"}), 409
+        _rec_state = {"status": "recording", "progress": 0.0, "file": None, "error": None}
+    RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    out = RECORDINGS_DIR / f"windowswap_{ts}.mp4"
+    threading.Thread(target=_do_record, args=(out,), daemon=True).start()
+    return jsonify({"status": "recording"})
+
+
+@app.route("/api/record/status")
+def record_status():
+    with _rec_lock:
+        return jsonify(dict(_rec_state))
+
+
+@app.route("/api/record/download/<path:filename>")
+def record_download(filename):
+    return send_from_directory(RECORDINGS_DIR, filename, as_attachment=True)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
