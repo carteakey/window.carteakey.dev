@@ -2,6 +2,7 @@
 """window.carteakey.dev — live camera stream server."""
 
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -282,6 +283,39 @@ def snapshots_day(date):
     noon = 120000
     pod = min(jpgs, key=lambda f: abs(int(f[:6]) - noon)) if jpgs else None
     return jsonify({"files": jpgs, "pod": pod})
+
+
+@app.route("/timelapse")
+def timelapse_page():
+    return render_template("timelapse.html")
+
+
+@app.route("/api/timelapse")
+def timelapse_list():
+    if not TIMELAPSE_DIR.exists():
+        return jsonify([])
+    items = []
+    for mp4 in sorted(TIMELAPSE_DIR.glob("*.mp4"), reverse=True):
+        items.append({
+            "date":    mp4.stem,
+            "file":    mp4.name,
+            "size_mb": round(mp4.stat().st_size / 1e6, 1),
+        })
+    return jsonify(items)
+
+
+@app.route("/api/disk")
+def disk_usage():
+    def dir_mb(p):
+        return round(sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) / 1e6, 1) if p.exists() else 0
+    total, _, free = shutil.disk_usage("/")
+    return jsonify({
+        "snapshots_mb":  dir_mb(SNAPSHOT_DIR),
+        "timelapse_mb":  dir_mb(TIMELAPSE_DIR),
+        "music_mb":      dir_mb(MUSIC_DIR),
+        "free_gb":       round(free  / 1e9, 1),
+        "total_gb":      round(total / 1e9, 1),
+    })
 
 
 @app.route("/manifest.json")

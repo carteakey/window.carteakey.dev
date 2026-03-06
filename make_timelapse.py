@@ -8,7 +8,7 @@ Skips today's folder — only processes completed past days.
 
 import subprocess
 import sys
-from datetime import date, datetime
+from datetime import date, timedelta
 from pathlib import Path
 
 SNAPSHOT_DIR = Path("/home/pi/services/window.carteakey.dev/static/snapshots")
@@ -77,18 +77,24 @@ def main():
 
     day_dirs = sorted(
         d for d in SNAPSHOT_DIR.iterdir()
-        if d.is_dir() and d.name != today  # never touch today
+        if d.is_dir() and d.name != today
     )
 
     if not day_dirs:
         print("Nothing to process.")
-        sys.exit(0)
+    else:
+        print(f"Processing {len(day_dirs)} day(s) …")
+        for d in day_dirs:
+            print(f"\n[{d.name}]")
+            success = make_timelapse(d)
+            if success:
+                cleanup(d)
 
-    print(f"Processing {len(day_dirs)} day(s) …")
-    for d in day_dirs:
-        print(f"\n[{d.name}]")
-        success = make_timelapse(d)
-        if success:
+    # Safety: delete snapshot dirs older than 30 days regardless
+    cutoff = (date.today() - timedelta(days=30)).isoformat()
+    for d in sorted(SNAPSHOT_DIR.iterdir()):
+        if d.is_dir() and d.name < cutoff and d.name != today:
+            print(f"\n[{d.name}] Safety cleanup (>30 days old)")
             cleanup(d)
 
     print("\nDone.")
