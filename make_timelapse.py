@@ -40,8 +40,9 @@ def make_timelapse(day_dir: Path) -> bool:
     result = subprocess.run(
         [
             "ffmpeg", "-y",
+            "-framerate", str(FPS),
             "-f", "concat", "-safe", "0", "-i", str(list_file),
-            "-vf", f"fps={FPS},format=yuv420p",
+            "-vf", "format=yuv420p",
             "-c:v", "libx264", "-crf", "23", "-preset", "fast",
             str(out),
         ],

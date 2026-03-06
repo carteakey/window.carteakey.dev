@@ -49,6 +49,9 @@ _stream_lock    = threading.Lock()
 _rec_lock = threading.Lock()
 _rec_state: dict = {"status": "idle", "progress": 0.0, "file": None, "error": None}
 
+_cam_lock = threading.Lock()  # ensures rpicam-still and rpicam-vid never overlap
+_wide_mode = False             # True = 1296:972 wide FOV, False = 1920:1080 crop
+
 app = Flask(__name__)
 
 
@@ -104,11 +107,13 @@ def capture_thread():
         stream_active.wait()  # block until a viewer arrives
 
         print("Stream starting…")
+        _cam_lock.acquire()
         cam = subprocess.Popen(
             [
                 "rpicam-vid", "-t", "0",
                 "--codec", "h264",
                 "--width", str(WIDTH), "--height", str(HEIGHT),
+                *(["--mode", "1296:972"] if _wide_mode else []),
                 "--framerate", str(FPS),
                 "--bitrate", BITRATE,
                 "--intra", str(INTRA),
@@ -144,6 +149,7 @@ def capture_thread():
         with _stream_lock:
             _stream_cam = None
             _stream_ffmpeg = None
+        _cam_lock.release()
 
         if stream_active.is_set():
             time.sleep(2)  # brief pause before crash-restart
@@ -182,12 +188,6 @@ def snapshot_thread():
     time.sleep(10)
     while True:
         time.sleep(SNAPSHOT_INTERVAL)
-        if not stream_active.is_set():
-            continue
-        ts_files = sorted(HLS_DIR.glob("seg*.ts"))
-        if len(ts_files) < 2:
-            continue
-        src = ts_files[-2]  # second-to-last is always fully written
 
         today = datetime.now().strftime("%Y-%m-%d")
         ts    = datetime.now().strftime("%H%M%S")
@@ -195,17 +195,45 @@ def snapshot_thread():
         day_dir.mkdir(parents=True, exist_ok=True)
         out = day_dir / f"{ts}.jpg"
 
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", str(src),
-                "-vframes", "1",
-                "-q:v", "2",
-                str(out),
-            ],
-            timeout=10,
-            stderr=subprocess.DEVNULL,
-        )
+        if stream_active.is_set():
+            # Stream running: extract frame from second-to-last HLS segment
+            ts_files = sorted(HLS_DIR.glob("seg*.ts"))
+            if len(ts_files) < 2:
+                continue
+            src = ts_files[-2]
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(src),
+                    "-vframes", "1",
+                    "-q:v", "2",
+                    str(out),
+                ],
+                timeout=10,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            # Idle: capture full-res still directly.
+            # _cam_lock prevents overlap if a viewer arrives mid-capture.
+            acquired = _cam_lock.acquire(blocking=False)
+            if not acquired:
+                continue  # stream just started, skip this cycle
+            try:
+                if stream_active.is_set():
+                    continue  # viewer arrived while we were waiting, skip
+                subprocess.run(
+                    [
+                        "rpicam-still",
+                        "--nopreview",
+                        "--width", str(WIDTH), "--height", str(HEIGHT),
+                        "-t", "1000",  # 1s settle time
+                        "-o", str(out),
+                    ],
+                    timeout=15,
+                    stderr=subprocess.DEVNULL,
+                )
+            finally:
+                _cam_lock.release()
 
 
 # ── Recording (WindowSwap 10-min clip) ────────────────────────────────────────
@@ -321,6 +349,19 @@ def viewers():
             del active_viewers[k]
         count = len(active_viewers)
     return jsonify({"count": count, "gen": stream_generation, "streaming": stream_active.is_set()})
+
+
+@app.route("/api/zoom", methods=["POST"])
+def set_zoom():
+    global _wide_mode
+    _wide_mode = bool(request.json.get("wide", False))
+    # Restart stream so new mode takes effect
+    with _stream_lock:
+        if _stream_cam:
+            _stream_cam.kill()
+        if _stream_ffmpeg:
+            _stream_ffmpeg.kill()
+    return jsonify({"wide": _wide_mode})
 
 
 @app.route("/api/snapshots")

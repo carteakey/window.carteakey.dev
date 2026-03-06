@@ -40,7 +40,11 @@ The stream only runs when viewers are present:
 - `snapshot_thread` skips extraction when `stream_active` is not set
 
 ### Snapshot pipeline
-`snapshot_thread` extracts frames from `ts_files[-2]` (second-to-last .ts segment — always fully written) via `ffmpeg -vframes 1`. Saves to `static/snapshots/YYYY-MM-DD/HHMMSS.jpg` every 30s. No stream pause needed.
+`snapshot_thread` runs every 30s regardless of stream state:
+- **Stream active**: extracts from `ts_files[-2]` (second-to-last .ts segment) via `ffmpeg -vframes 1`
+- **Stream idle**: runs `rpicam-still --width 1920 --height 1080` directly
+
+`_cam_lock` prevents `rpicam-still` and `rpicam-vid` from overlapping if a viewer arrives mid-capture.
 
 ### Key threads
 | Thread | Purpose |
@@ -60,6 +64,9 @@ IDLE_TIMEOUT = 120    # seconds
 VIEWER_TTL = 60       # heartbeat expiry
 RECORD_DURATION = 600 # 10-min WindowSwap clip
 ```
+
+### Zoom / sensor mode
+`_wide_mode` bool controls whether rpicam-vid uses `--mode 1296:972` (2×2 binned full-sensor, wider FOV, softer quality) or the default 1920×1080 crop (sharp). Toggled via `POST /api/zoom`. Stream is killed and restarted immediately to apply the new mode. Frontend zoom button in controls bar.
 
 ## Key files
 
@@ -87,6 +94,7 @@ RECORD_DURATION = 600 # 10-min WindowSwap clip
 | `POST /api/record` | Start 10-min WindowSwap clip recording |
 | `GET /api/record/status` | `{status, progress, file, error}` |
 | `GET /api/record/download/<file>` | Download recorded clip |
+| `POST /api/zoom` | `{"wide": bool}` — switch sensor mode, restarts stream |
 
 ## Static directories (gitignored)
 
