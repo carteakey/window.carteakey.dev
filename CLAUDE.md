@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A window-swap.com-style live camera site running on a Raspberry Pi 4B with an OV5647 CSI camera module. Publicly served at `window.carteakey.dev` via Cloudflare Tunnel → localhost:8765.
+A window-swap.com-style live camera site running on a Raspberry Pi 4B with an OV5647 CSI camera module. Served privately over Tailscale (`http://100.126.76.57:8765`) or LAN (`http://192.168.0.85:8765`).
 
 ## Running and reloading
 
@@ -30,7 +30,6 @@ sudo systemctl stop window-cam && python3 app.py
 - **No re-encoding**: ffmpeg uses `-c:v copy`, zero CPU for encoding
 - **Segments**: 2s each, rolling 5-segment window, `delete_segments+append_list`
 - **Latency**: ~6-8s (HLS buffer)
-- Cloudflare Tunnel serves static `.ts` files — compliant with ToS (no raw streaming)
 
 ### Idle management
 The stream only runs when viewers are present:
@@ -96,12 +95,12 @@ RECORD_DURATION = 600 # 10-min WindowSwap clip
 | `GET /api/record/download/<file>` | Download recorded clip |
 | `POST /api/zoom` | `{"wide": bool}` — switch sensor mode, restarts stream |
 
-## Static directories (gitignored)
+## Static directories
 
 ```
 static/hls/          # Live HLS segments (transient)
-static/snapshots/    # YYYY-MM-DD/HHMMSS.jpg
-static/timelapse/    # YYYY-MM-DD.mp4
+static/snapshots/    # Symlinked to /media/pi/CASEY/snapshots
+static/timelapse/    # Symlinked to /media/pi/CASEY/timelapse
 static/music/        # MP3s served to frontend player
 static/recordings/   # WindowSwap submission clips
 ```
@@ -109,13 +108,14 @@ static/recordings/   # WindowSwap submission clips
 ## Timelapse generation
 
 `make_timelapse.py` runs at 00:05 daily:
-1. For each past day's snapshot dir: writes `_list.txt` concat file → `ffmpeg libx264 -crf 23` → `static/timelapse/YYYY-MM-DD.mp4`
+1. For each past day's snapshot dir: writes `_list.txt` concat file -> `ffmpeg libx264 -crf 23` -> `static/timelapse/YYYY-MM-DD.mp4`
 2. On success: deletes all JPEGs and removes the day directory
 3. Safety cleanup: deletes snapshot dirs older than 30 days regardless
 
-## Hardware notes
+## Hardware & System Requirements
 
-- Camera: OV5647 (Pi Camera Module v1), accessed via `rpicam-vid` (libcamera stack, NOT legacy v4l2)
-- Hardware encoder: Pi 4B VPU via rpicam-vid's internal H264 encoder
-- Do NOT revert to MJPEG — software encoding was 89% CPU at 1080p30
-- CPU at idle (stream paused): ~0%. CPU while streaming: ~38% total
+- **Camera**: OV5647 (Pi Camera Module v1), accessed via `rpicam-vid` (libcamera stack, NOT legacy v4l2)
+- **GPU Memory**: `/boot/firmware/config.txt` MUST have `gpu_mem=128`. Reducing to 16MB breaks the VideoCore VCHI MMAL/ISP interface (`status=-22`), disabling the ISP capture devices and causing `rpicam-apps` to fail with `Platform::UNKNOWN`.
+- **Hardware encoder**: Pi 4B VPU via rpicam-vid's internal H264 encoder
+- **Storage**: Persistent USB drive `CASEY` (`UUID=AE63-588B`) mounted to `/media/pi/CASEY` in `/etc/fstab`
+- **CPU**: ~0% at idle (stream paused). ~38% total while streaming.
