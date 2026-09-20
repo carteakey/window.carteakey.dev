@@ -54,6 +54,12 @@ _wide_mode = False             # True = 1296:972 wide FOV, False = 1920:1080 cro
 
 app = Flask(__name__)
 
+@app.before_request
+def block_public_ingress():
+    # Deny public ingress from Cloudflare Tunnel
+    if request.headers.get("CF-Ray") or request.host.startswith("window.carteakey.dev"):
+        return Response("Private service: Public access to Window Cam is disabled. Please connect via Tailscale or LAN.", status=403, mimetype="text/plain")
+
 
 # ── Weather ───────────────────────────────────────────────────────────────────
 WMO_DESC = {
