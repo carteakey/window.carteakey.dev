@@ -1,3 +1,4 @@
+import shutil
 #!/usr/bin/env python3
 """
 Generate daily timelapse MP4s from snapshots, then delete the raw JPEGs.
@@ -17,7 +18,7 @@ FPS = 24  # output timelapse framerate
 
 
 def make_timelapse(day_dir: Path) -> bool:
-    jpegs = sorted(day_dir.glob("*.jpg"))
+    jpegs = sorted(p for p in day_dir.glob("*.jpg") if p.stat().st_size > 0)
     if len(jpegs) < 2:
         print(f"  skipping {day_dir.name}: only {len(jpegs)} frames")
         return False
@@ -37,37 +38,48 @@ def make_timelapse(day_dir: Path) -> bool:
         "\n".join(f"file '{p.resolve()}'" for p in jpegs)
     )
 
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-framerate", str(FPS),
-            "-f", "concat", "-safe", "0", "-i", str(list_file),
-            "-vf", "format=yuv420p",
-            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-            str(out),
-        ],
-        capture_output=True,
-        timeout=600,
-    )
+    log_file = day_dir / "_ffmpeg.log"
+    with open(log_file, "w") as log:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-nostdin",
+                "-r", str(FPS),
+                "-f", "concat", "-safe", "0", "-i", str(list_file),
+                "-vf", "format=yuv420p",
+                "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
+                str(out),
+            ],
+            stdout=log,
+            stderr=log,
+            timeout=1800,
+        )
     list_file.unlink(missing_ok=True)
 
     if result.returncode != 0:
         print(f"  ERROR: ffmpeg failed for {day_dir.name}")
-        print(result.stderr.decode()[-500:])
+        if log_file.exists():
+            print(log_file.read_text()[-500:])
         return False
+    log_file.unlink(missing_ok=True)
 
     size_mb = out.stat().st_size / 1e6
     print(f"  done → {out.name} ({size_mb:.1f} MB)")
+
+    # Archival to Glowdesk NAS if mounted
+    nas_archive = Path("/mnt/storage/archive/window-cam/timelapse")
+    if nas_archive.is_dir():
+        try:
+            shutil.copy2(out, nas_archive / out.name)
+            print(f"  archived to NAS → {nas_archive / out.name}")
+        except Exception as e:
+            print(f"  NAS archive warning: {e}")
+
     return True
 
 
 def cleanup(day_dir: Path):
-    removed = 0
-    for jpg in day_dir.glob("*.jpg"):
-        jpg.unlink()
-        removed += 1
-    day_dir.rmdir()
-    print(f"  cleaned up {removed} snapshots from {day_dir.name}")
+    shutil.rmtree(day_dir)
+    print(f"  cleaned up snapshots from {day_dir.name}")
 
 
 def main():
@@ -92,7 +104,7 @@ def main():
                 cleanup(d)
 
     # Safety: delete snapshot dirs older than 30 days regardless
-    cutoff = (date.today() - timedelta(days=30)).isoformat()
+    cutoff = (date.today() - timedelta(days=7)).isoformat()
     for d in sorted(SNAPSHOT_DIR.iterdir()):
         if d.is_dir() and d.name < cutoff and d.name != today:
             print(f"\n[{d.name}] Safety cleanup (>30 days old)")
