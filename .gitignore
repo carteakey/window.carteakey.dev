@@ -7,3 +7,7 @@ __pycache__/
 *.png
 static/hls/
 static/recordings/
+
+# Camera output (symlinks into ~/camera-storage on the Pi)
+static/snapshots
+static/timelapse

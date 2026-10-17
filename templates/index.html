@@ -237,7 +237,19 @@
     padding: 7px 10px;
     display: flex;
     align-items: center;
+    gap: 4px;
   }
+
+  #btn-zoom {
+    opacity: 0.2;
+    transition: opacity 0.2s, color 0.15s;
+    margin-right: 6px;
+    border-right: 1px solid rgba(255,255,255,0.12);
+    padding-right: 10px;
+  }
+  #btn-zoom:hover { opacity: 1; }
+  #btn-zoom.active { opacity: 0.7; color: rgba(255,255,255,0.9); }
+  #btn-zoom.active:hover { opacity: 1; }
 
   /* ── Shuffle btn active state ──────────────────────────────────────────── */
   .ctrl-btn.active { color: rgba(255,255,255,0.95); }
@@ -894,9 +906,8 @@ let wideMode = false;
 
 btnZoom.addEventListener('click', async () => {
   wideMode = !wideMode;
-  // Swap icon: + (wide) ↔ − (crop/zoom in)
-  btnZoom.querySelector('line:last-child').style.display = wideMode ? 'none' : '';
-  btnZoom.title = wideMode ? 'Switch to sharp crop view' : 'Switch to wide angle view';
+  btnZoom.classList.toggle('active', wideMode);
+  btnZoom.title = wideMode ? 'Wide angle (click for sharp crop)' : 'Sharp crop (click for wide angle)';
   await fetch('/api/zoom', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({wide: wideMode}) });
 });
 
