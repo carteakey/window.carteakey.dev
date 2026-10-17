@@ -4,6 +4,14 @@ A live 24/7 window camera stream and automated timelapse generator running on a 
 
 Served privately across LAN and Tailscale via Flask, piping hardware-encoded H264 into an HLS segmenter for playback in modern browsers.
 
+## Also in this repo
+
+| Path | What | Formerly |
+|---|---|---|
+| [`usb-webcam/`](usb-webcam) | Lightweight Flask server for streaming **USB** webcams on a Raspberry Pi (the precursor to the CSI-camera setup above) | [`rpi-usb-webcam`](https://github.com/carteakey/rpi-usb-webcam) (archived) |
+
+Its history is preserved; its other branches live here as `usb-webcam/<branch>`.
+
 ## Access
 
 * **Tailscale (Private):** `http://100.126.76.57:8765`
