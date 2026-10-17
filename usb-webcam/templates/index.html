@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>webcam</title>
+<meta name="theme-color" content="#000000">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    overflow: hidden;
+    font-family: 'Courier New', Courier, monospace;
+    color: #eee;
+    user-select: none;
+    cursor: none;
+  }
+  body.ui-visible { cursor: default; }
+
+  #feed {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+    display: block;
+    background: #000;
+  }
+
+  /* ── UI fade wrapper ─────────────────────────────────────────────────── */
+  #ui { opacity: 0; transition: opacity 0.5s ease; pointer-events: none; }
+  #ui.visible { opacity: 1; pointer-events: auto; }
+
+  /* ── Shared surface ──────────────────────────────────────────────────── */
+  .surface {
+    position: fixed;
+    z-index: 10;
+    background: rgba(0,0,0,0.38);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-radius: 8px;
+    color: rgba(255,255,255,0.92);
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+  }
+
+  /* ── Top-left ────────────────────────────────────────────────────────── */
+  #title-bar {
+    top: 18px; left: 20px;
+    padding: 6px 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #title-bar .name { font-size: 12px; font-weight: bold; letter-spacing: 0.1em; }
+  #live-badge {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 10px; letter-spacing: 0.12em;
+    color: rgba(255,255,255,0.65);
+  }
+  #live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #e74c3c; animation: pulse 2s infinite; flex-shrink: 0;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  #viewer-count { color: rgba(255,255,255,0.4); }
+
+  /* ── Top-right: clock ───────────────────────────────────────────────── */
+  #info-bar {
+    top: 18px; right: 20px;
+    padding: 6px 14px;
+    text-align: right;
+    line-height: 1.8;
+  }
+  #info-bar .datetime { font-size: 10px; color: rgba(255,255,255,0.55); letter-spacing: 0.06em; }
+
+  /* ── Bottom-right controls ──────────────────────────────────────────── */
+  #controls {
+    bottom: 20px; right: 20px;
+    padding: 7px 10px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .ctrl-btn {
+    background: none; border: none;
+    color: rgba(255,255,255,0.6);
+    cursor: pointer; padding: 2px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: color 0.15s;
+  }
+  .ctrl-btn:hover { color: #fff; }
+  .ctrl-btn svg { display: block; }
+
+  /* ── Shared slide panel ──────────────────────────────────────────────── */
+  .slide-panel {
+    position: fixed; top: 0; bottom: 0;
+    z-index: 50;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    display: flex; flex-direction: column;
+    font-size: 11px;
+    transition: transform 0.35s cubic-bezier(.4,0,.2,1);
+  }
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 16px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    letter-spacing: 0.1em; font-size: 10px; color: rgba(255,255,255,0.5);
+    flex-shrink: 0;
+  }
+  .panel-header button {
+    background: none; border: none; color: rgba(255,255,255,0.4);
+    cursor: pointer; padding: 2px; display: flex; align-items: center;
+  }
+  .panel-header button:hover { color: #fff; }
+
+  /* ── Snapshot panel ─────────────────────────────────────────────────── */
+  #snap-panel {
+    right: 0; width: 300px;
+    transform: translateX(100%);
+  }
+  #snap-panel.open { transform: translateX(0); }
+
+  #snap-scroll {
+    flex: 1; overflow-y: auto; padding: 12px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  #snap-scroll::-webkit-scrollbar { width: 3px; }
+  #snap-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+  .snap-day { display: flex; flex-direction: column; gap: 6px; }
+  .snap-day-label { font-size: 9px; letter-spacing: 0.1em; color: rgba(255,255,255,0.35); padding-bottom: 2px; }
+  .snap-pod {
+    width: 100%; aspect-ratio: 16/9; object-fit: cover;
+    border-radius: 4px; display: block; cursor: pointer; transition: opacity 0.15s;
+  }
+  .snap-pod:hover { opacity: 0.85; }
+  .snap-count { font-size: 9px; color: rgba(255,255,255,0.3); }
+
+  #snap-timelapse-link {
+    display: block; padding: 10px 16px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    font-size: 10px; letter-spacing: 0.1em;
+    color: rgba(255,255,255,0.3); text-decoration: none;
+    transition: color 0.15s; flex-shrink: 0;
+  }
+  #snap-timelapse-link:hover { color: rgba(255,255,255,0.75); }
+
+  /* ── Settings panel ─────────────────────────────────────────────────── */
+  #settings-panel {
+    left: 0; width: 360px;
+    transform: translateX(-100%);
+  }
+  #settings-panel.open { transform: translateX(0); }
+
+  .panel-scroll {
+    flex: 1; overflow-y: auto; padding: 14px 16px;
+  }
+  .panel-scroll::-webkit-scrollbar { width: 3px; }
+  .panel-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+  /* ── Settings sub-tabs ──────────────────────────────────────────────── */
+  .stab-bar {
+    display: flex; gap: 0; margin-bottom: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    flex-shrink: 0;
+  }
+  .stab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: rgba(255,255,255,0.35); cursor: pointer; padding: 6px 10px;
+    font-family: inherit; font-size: 9px; letter-spacing: 0.12em;
+    transition: color 0.15s, border-color 0.15s; margin-bottom: -1px;
+  }
+  .stab:hover { color: rgba(255,255,255,0.7); }
+  .stab.active { color: #fff; border-bottom-color: rgba(255,255,255,0.5); }
+
+  .stab-pane { display: none; }
+  .stab-pane.active { display: block; }
+
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 9px; letter-spacing: 0.1em; color: rgba(255,255,255,0.38); margin-bottom: 4px; }
+  .field input, .field select {
+    width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px; color: #eee; font-family: inherit; font-size: 11px;
+    padding: 6px 8px; outline: none; transition: border-color 0.15s;
+  }
+  .field input:focus, .field select:focus { border-color: rgba(255,255,255,0.3); }
+  .field select option { background: #111; }
+  .field-check { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .field-check input[type=checkbox] { width: 13px; height: 13px; cursor: pointer; }
+  .field-check label { font-size: 10px; color: rgba(255,255,255,0.55); cursor: pointer; letter-spacing: 0.06em; }
+
+  .save-btn {
+    width: 100%; padding: 8px; margin-top: 4px;
+    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 4px; color: #fff; font-family: inherit; font-size: 10px;
+    letter-spacing: 0.12em; cursor: pointer; transition: background 0.15s;
+  }
+  .save-btn:hover { background: rgba(255,255,255,0.18); }
+  .save-msg { font-size: 9px; letter-spacing: 0.08em; text-align: center; margin-top: 8px; min-height: 14px; }
+  .save-msg.ok { color: rgba(100,220,100,0.8); }
+  .save-msg.err { color: rgba(220,100,100,0.8); }
+
+  /* ── System panel ───────────────────────────────────────────────────── */
+  #system-panel {
+    left: 0; width: 320px;
+    transform: translateX(-100%);
+  }
+  #system-panel.open { transform: translateX(0); }
+
+  .sys-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .sys-row:last-child { border-bottom: none; }
+  .sys-label { font-size: 9px; letter-spacing: 0.1em; color: rgba(255,255,255,0.35); }
+  .sys-val { font-size: 11px; color: rgba(255,255,255,0.75); text-align: right; }
+  .sys-bar-wrap { width: 60px; height: 3px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden; margin-top: 3px; margin-left: auto; }
+  .sys-bar { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+  .sys-section-title { font-size: 8px; letter-spacing: 0.15em; color: rgba(255,255,255,0.2); padding: 10px 0 4px; }
+
+  .stream-ctrl { display: flex; gap: 6px; margin-top: 14px; }
+  .stream-btn {
+    flex: 1; padding: 7px 4px;
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 4px; color: rgba(255,255,255,0.7); font-family: inherit;
+    font-size: 9px; letter-spacing: 0.1em; cursor: pointer; transition: background 0.15s;
+  }
+  .stream-btn:hover { background: rgba(255,255,255,0.14); color: #fff; }
+  .stream-btn.danger { border-color: rgba(220,80,80,0.3); color: rgba(220,100,100,0.8); }
+  .stream-btn.danger:hover { background: rgba(200,60,60,0.2); }
+
+  /* ── Icon buttons ────────────────────────────────────────────────────── */
+  #btn-snaps, #btn-settings, #btn-system {
+    background: none; border: none; color: rgba(255,255,255,0.5);
+    cursor: pointer; padding: 1px; display: flex; align-items: center;
+    transition: color 0.15s;
+  }
+  #btn-snaps:hover, #btn-settings:hover, #btn-system:hover { color: rgba(255,255,255,0.9); }
+
+  /* ── Connecting overlay ─────────────────────────────────────────────── */
+  #connect-overlay {
+    display: none; position: fixed; inset: 0; z-index: 20;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; color: rgba(255,255,255,0.45); font-size: 11px;
+    letter-spacing: 0.12em; pointer-events: none;
+  }
+  #connect-overlay .spinner {
+    width: 20px; height: 20px;
+    border: 2px solid rgba(255,255,255,0.12);
+    border-top-color: rgba(255,255,255,0.5);
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Disk bar ────────────────────────────────────────────────────────── */
+  #disk-bar-wrap {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    height: 2px; z-index: 5;
+    opacity: 0; transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  body.ui-visible #disk-bar-wrap { opacity: 1; }
+  #disk-bar-bg { height: 100%; background: rgba(255,255,255,0.07); }
+  #disk-bar-fill { height: 100%; background: rgba(255,255,255,0.3); width: 0%; transition: width 1s ease; }
+  #disk-label {
+    position: fixed; bottom: 6px; left: 50%; transform: translateX(-50%);
+    font-size: 9px; letter-spacing: 0.1em; color: rgba(255,255,255,0.3);
+    z-index: 6; pointer-events: none; white-space: nowrap;
+    opacity: 0; transition: opacity 0.3s;
+  }
+  body.ui-visible #disk-label { opacity: 1; }
+</style>
+</head>
+<body>
+
+<video id="feed" autoplay muted playsinline></video>
+
+<div id="ui">
+  <!-- top-left -->
+  <div class="surface" id="title-bar">
+    <span class="name">webcam</span>
+    <div id="live-badge">
+      <span id="live-dot"></span>
+      LIVE
+      <span id="viewer-count"></span>
+    </div>
+    <button id="btn-snaps" title="Snapshots">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/><line x1="3" y1="9" x2="21" y2="9"/>
+      </svg>
+    </button>
+    <button id="btn-system" title="System">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- top-right -->
+  <div class="surface" id="info-bar">
+    <div class="datetime" id="clock"></div>
+  </div>
+
+  <!-- bottom-right -->
+  <div class="surface" id="controls">
+    <button class="ctrl-btn" id="btn-settings" title="Settings">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+    <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen">
+      <svg id="icon-maximize" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+      </svg>
+      <svg id="icon-minimize" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+        <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<!-- snapshot panel (right) -->
+<div id="snap-panel" class="slide-panel">
+  <div class="panel-header">
+    <span>SNAPSHOTS</span>
+    <button id="btn-snaps-close" title="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+  <div id="snap-scroll"></div>
+  <a id="snap-timelapse-link" href="/timelapse">view timelapses →</a>
+</div>
+
+<!-- settings panel (left) -->
+<div id="settings-panel" class="slide-panel">
+  <div class="panel-header">
+    <span>SETTINGS</span>
+    <button id="btn-settings-close" title="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+  <div class="stab-bar" id="stab-bar">
+    <button class="stab active" data-tab="video">VIDEO</button>
+    <button class="stab" data-tab="audio">AUDIO</button>
+    <button class="stab" data-tab="storage">STORAGE</button>
+    <button class="stab" data-tab="auth">AUTH</button>
+  </div>
+  <div class="panel-scroll" id="settings-body">
+    <div style="padding:20px 0;text-align:center;color:rgba(255,255,255,0.25);font-size:10px;letter-spacing:0.1em">loading…</div>
+  </div>
+</div>
+
+<!-- system panel (left, behind settings) -->
+<div id="system-panel" class="slide-panel">
+  <div class="panel-header">
+    <span>SYSTEM</span>
+    <button id="btn-system-close" title="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+  <div class="panel-scroll" id="system-body">
+    <div style="padding:20px 0;text-align:center;color:rgba(255,255,255,0.25);font-size:10px;letter-spacing:0.1em">loading…</div>
+  </div>
+</div>
+
+<!-- connecting overlay -->
+<div id="connect-overlay">
+  <div class="spinner"></div>
+  <span>connecting</span>
+</div>
+
+<!-- disk usage bar -->
+<div id="disk-bar-wrap">
+  <div id="disk-bar-bg"><div id="disk-bar-fill"></div></div>
+</div>
+<div id="disk-label"></div>
+
+<script>
+// ── Auto-hide UI ──────────────────────────────────────────────────────────────
+const ui = document.getElementById('ui');
+let hideTimer;
+function showUI() {
+  ui.classList.add('visible'); document.body.classList.add('ui-visible');
+  clearTimeout(hideTimer); hideTimer = setTimeout(hideUI, 3000);
+}
+function hideUI() { ui.classList.remove('visible'); document.body.classList.remove('ui-visible'); }
+document.addEventListener('mousemove', showUI);
+document.addEventListener('mousedown', showUI);
+document.addEventListener('touchstart', showUI, { passive: true });
+document.addEventListener('keydown', showUI);
+ui.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+ui.addEventListener('mouseleave', () => { hideTimer = setTimeout(hideUI, 1500); });
+
+// ── Clock ─────────────────────────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()
+    + ' · ' + now.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' });
+}
+updateClock(); setInterval(updateClock, 1000);
+
+// ── HLS stream ────────────────────────────────────────────────────────────────
+const feed = document.getElementById('feed');
+const HLS_SRC = '/hls/stream.m3u8';
+const connectOverlay = document.getElementById('connect-overlay');
+let hls, hlsFailing = false;
+
+function showConnecting() { if (!hlsFailing) { hlsFailing = true; connectOverlay.style.display = 'flex'; } }
+function hideConnecting() { hlsFailing = false; connectOverlay.style.display = 'none'; }
+feed.addEventListener('playing', hideConnecting);
+
+function initHLS() {
+  if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+    if (hls) hls.destroy();
+    hls = new Hls({ liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 6, maxBufferLength: 10, backBufferLength: 0 });
+    hls.loadSource(HLS_SRC);
+    hls.attachMedia(feed);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => { hideConnecting(); feed.play().catch(() => {}); });
+    hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { showConnecting(); setTimeout(initHLS, 3000); } });
+  } else if (feed.canPlayType('application/vnd.apple.mpegurl')) {
+    feed.src = HLS_SRC; feed.play().catch(() => {});
+    feed.onerror = () => { showConnecting(); setTimeout(initHLS, 3000); };
+  }
+}
+// Wait until stream is confirmed running before loading HLS player
+function waitAndInit(attempt) {
+  fetch('/api/viewers').then(r => r.json()).then(d => {
+    if (d.streaming) { initHLS(); }
+    else if (attempt < 30) { setTimeout(() => waitAndInit(attempt + 1), 1000); }
+    else { showConnecting(); setTimeout(() => waitAndInit(0), 5000); }
+  }).catch(() => { setTimeout(() => waitAndInit(attempt), 2000); });
+}
+setTimeout(() => waitAndInit(0), 1000);
+
+// ── Viewer count + heartbeat ──────────────────────────────────────────────────
+const viewerEl = document.getElementById('viewer-count');
+const SESSION_ID = (() => {
+  let id = sessionStorage.getItem('wcam_sid');
+  if (!id) { id = Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem('wcam_sid', id); }
+  return id;
+})();
+
+function sendHeartbeat() {
+  fetch('/api/heartbeat', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({sid: SESSION_ID}) }).catch(() => {});
+}
+function updateViewers() {
+  fetch('/api/viewers').then(r => r.json())
+    .then(d => { viewerEl.textContent = d.count > 0 ? `· ${d.count}` : ''; })
+    .catch(() => {});
+}
+sendHeartbeat(); updateViewers();
+setInterval(sendHeartbeat, 30000); setInterval(updateViewers, 15000);
+
+// ── Fullscreen ────────────────────────────────────────────────────────────────
+document.getElementById('btn-fullscreen').addEventListener('click', () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+  else document.exitFullscreen();
+});
+document.addEventListener('fullscreenchange', () => {
+  const full = !!document.fullscreenElement;
+  document.getElementById('icon-maximize').style.display = full ? 'none' : 'block';
+  document.getElementById('icon-minimize').style.display = full ? 'block' : 'none';
+  if (full && screen.orientation?.lock) screen.orientation.lock('landscape').catch(() => {});
+});
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target !== document.body) return;
+  if (e.code === 'KeyF') { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); }
+  if (e.code === 'Escape') { closeAllPanels(); }
+});
+
+// ── Panel helpers ─────────────────────────────────────────────────────────────
+const snapPanel     = document.getElementById('snap-panel');
+const settingsPanel = document.getElementById('settings-panel');
+const systemPanel   = document.getElementById('system-panel');
+
+function closeAllPanels() {
+  snapPanel.classList.remove('open');
+  settingsPanel.classList.remove('open');
+  systemPanel.classList.remove('open');
+}
+
+// ── Snapshot panel ────────────────────────────────────────────────────────────
+const snapScroll = document.getElementById('snap-scroll');
+
+function openSnapPanel()  {
+  closeAllPanels();
+  snapPanel.classList.add('open');
+  if (!snapScroll.children.length) loadSnapshots();
+}
+function closeSnapPanel() { snapPanel.classList.remove('open'); }
+
+document.getElementById('btn-snaps').addEventListener('click', openSnapPanel);
+document.getElementById('btn-snaps-close').addEventListener('click', closeSnapPanel);
+document.addEventListener('click', e => {
+  if (snapPanel.classList.contains('open') && !snapPanel.contains(e.target) && e.target.id !== 'btn-snaps') closeSnapPanel();
+});
+
+function loadSnapshots() {
+  fetch('/api/snapshots').then(r => r.json()).then(days => {
+    snapScroll.innerHTML = '';
+    if (!days.length) {
+      snapScroll.innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);font-size:10px">no snapshots yet</div>';
+      return;
+    }
+    days.forEach(day => {
+      const el = document.createElement('div');
+      el.className = 'snap-day';
+      const label = day.date === new Date().toISOString().slice(0,10) ? 'TODAY' : day.date;
+      el.innerHTML = `
+        <div class="snap-day-label">${label}</div>
+        <img class="snap-pod" loading="lazy" src="/static/snapshots/${day.date}/${day.pod}" title="${day.date}">
+        <div class="snap-count">${day.count} snapshot${day.count !== 1 ? 's' : ''}</div>
+      `;
+      snapScroll.appendChild(el);
+    });
+  }).catch(() => {});
+}
+
+// ── System panel ──────────────────────────────────────────────────────────────
+function openSystemPanel() {
+  closeAllPanels();
+  systemPanel.classList.add('open');
+  loadSystemInfo();
+}
+
+document.getElementById('btn-system').addEventListener('click', openSystemPanel);
+document.getElementById('btn-system-close').addEventListener('click', () => systemPanel.classList.remove('open'));
+document.addEventListener('click', e => {
+  if (systemPanel.classList.contains('open') &&
+      !systemPanel.contains(e.target) && e.target.id !== 'btn-system') systemPanel.classList.remove('open');
+});
+
+function bar(pct, color) {
+  return `<div class="sys-bar-wrap"><div class="sys-bar" style="width:${pct}%;background:${color}"></div></div>`;
+}
+
+function loadSystemInfo() {
+  const body = document.getElementById('system-body');
+  Promise.all([fetch('/api/system').then(r=>r.json()), fetch('/api/disk').then(r=>r.json())])
+    .then(([sys, disk]) => {
+      const cpuColor = sys.cpu_percent > 80 ? 'rgba(220,80,80,0.7)' : sys.cpu_percent > 60 ? 'rgba(220,180,60,0.7)' : 'rgba(80,200,120,0.7)';
+      const memColor = sys.memory_percent > 80 ? 'rgba(220,80,80,0.7)' : sys.memory_percent > 60 ? 'rgba(220,180,60,0.7)' : 'rgba(80,200,120,0.7)';
+      const diskPct  = Math.round((disk.total_gb - disk.free_gb) / disk.total_gb * 100);
+      const diskColor = diskPct > 80 ? 'rgba(220,80,80,0.7)' : diskPct > 60 ? 'rgba(220,180,60,0.7)' : 'rgba(80,200,120,0.7)';
+
+      body.innerHTML = `
+        <div class="sys-section-title">DEVICE</div>
+        <div class="sys-row"><span class="sys-label">HOSTNAME</span><span class="sys-val">${sys.hostname || '—'}</span></div>
+        <div class="sys-row"><span class="sys-label">IP</span><span class="sys-val">${sys.ip_address || '—'}</span></div>
+        <div class="sys-row"><span class="sys-label">UPTIME</span><span class="sys-val">${sys.uptime || '—'}</span></div>
+        <div class="sys-section-title">RESOURCES</div>
+        <div class="sys-row"><span class="sys-label">CPU</span><span class="sys-val">${sys.cpu_percent}%${bar(sys.cpu_percent, cpuColor)}</span></div>
+        <div class="sys-row"><span class="sys-label">MEMORY</span><span class="sys-val">${sys.memory_percent}%${bar(sys.memory_percent, memColor)}</span></div>
+        <div class="sys-row"><span class="sys-label">DISK</span><span class="sys-val">${diskPct}%${bar(diskPct, diskColor)}</span></div>
+        ${sys.temperature ? `<div class="sys-row"><span class="sys-label">TEMP</span><span class="sys-val">${sys.temperature.toFixed(1)}°C${bar(Math.min(100, sys.temperature/80*100), sys.temperature>70?'rgba(220,80,80,0.7)':'rgba(80,200,120,0.7)')}</span></div>` : ''}
+        <div class="sys-section-title">STORAGE</div>
+        <div class="sys-row"><span class="sys-label">FREE</span><span class="sys-val">${disk.free_gb} GB</span></div>
+        <div class="sys-row"><span class="sys-label">SNAPSHOTS</span><span class="sys-val">${disk.snapshots_mb} MB</span></div>
+        <div class="sys-row"><span class="sys-label">TIMELAPSE</span><span class="sys-val">${disk.timelapse_mb} MB</span></div>
+        <div class="sys-section-title">STREAM</div>
+        <div class="sys-row"><span class="sys-label">STATUS</span><span class="sys-val" style="color:${sys.stream_running?'rgba(80,200,120,0.9)':'rgba(220,80,80,0.8)'}">${sys.stream_running?'RUNNING':'STOPPED'}</span></div>
+        <div class="sys-row"><span class="sys-label">SNAPSHOT DATES</span><span class="sys-val">${sys.snapshot_date_count || 0}</span></div>
+        <div class="sys-row"><span class="sys-label">TIMELAPSES</span><span class="sys-val">${sys.timelapse_count || 0}</span></div>
+        <div class="stream-ctrl">
+          <button class="stream-btn ${sys.stream_running?'danger':''}" onclick="streamAction('${sys.stream_running?'stop':'start'}')">${sys.stream_running?'STOP':'START'}</button>
+          <button class="stream-btn" onclick="streamAction('restart')">RESTART</button>
+        </div>
+      `;
+    })
+    .catch(() => { document.getElementById('system-body').innerHTML = '<div style="padding:20px 0;text-align:center;color:rgba(255,255,255,0.25);font-size:10px">error loading</div>'; });
+}
+
+function streamAction(action) {
+  fetch('/api/stream_control', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action}) })
+    .then(r=>r.json()).then(() => loadSystemInfo()).catch(()=>{});
+}
+
+// ── Settings panel ────────────────────────────────────────────────────────────
+let settingsData = null, devicesData = null, activeTab = 'video';
+
+function openSettingsPanel() {
+  closeAllPanels();
+  settingsPanel.classList.add('open');
+  if (!settingsData) loadSettings();
+}
+
+document.getElementById('btn-settings').addEventListener('click', openSettingsPanel);
+document.getElementById('btn-settings-close').addEventListener('click', () => settingsPanel.classList.remove('open'));
+document.addEventListener('click', e => {
+  if (settingsPanel.classList.contains('open') &&
+      !settingsPanel.contains(e.target) && e.target.id !== 'btn-settings') settingsPanel.classList.remove('open');
+});
+
+document.getElementById('stab-bar').addEventListener('click', e => {
+  const btn = e.target.closest('.stab');
+  if (!btn) return;
+  document.querySelectorAll('.stab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  activeTab = btn.dataset.tab;
+  document.querySelectorAll('.stab-pane').forEach(p => p.classList.remove('active'));
+  const pane = document.getElementById('pane-' + activeTab);
+  if (pane) pane.classList.add('active');
+});
+
+function loadSettings() {
+  Promise.all([fetch('/api/settings').then(r=>r.json()), fetch('/api/devices').then(r=>r.json())])
+    .then(([s, d]) => { settingsData = s; devicesData = d; renderSettings(); })
+    .catch(() => { document.getElementById('settings-body').innerHTML = '<div style="padding:20px 0;text-align:center;color:rgba(255,255,255,0.25);font-size:10px">error loading</div>'; });
+}
+
+function opt(val, label, cur) { return `<option value="${val}" ${cur===val?'selected':''}>${label}</option>`; }
+
+function renderSettings() {
+  const s = settingsData, d = devicesData;
+  const videoOpts = d.webcams.map(w => opt(w.path, `${w.name} (${w.path})`, s.video.device)).join('');
+  const resOpts   = d.resolutions.map(r => opt(r, r, s.video.resolution)).join('');
+  const audioOpts = d.audio_devices.map(a => opt(a.path, `${a.name} (${a.path})`, s.audio.device)).join('');
+
+  document.getElementById('settings-body').innerHTML = `
+    <div class="stab-pane ${activeTab==='video'?'active':''}" id="pane-video">
+      <div class="field"><label>VIDEO DEVICE</label><select name="video[device]" id="s-video-device">${videoOpts}</select></div>
+      <div class="field"><label>RESOLUTION</label><select name="video[resolution]" id="s-resolution">${resOpts}</select></div>
+      <div class="field"><label>FRAMERATE</label><input type="number" name="video[framerate]" value="${s.video.framerate}" min="1" max="60"></div>
+      <div class="field"><label>QUALITY PRESET</label><select name="video[preset]">
+        ${['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower'].map(p => opt(p, p, s.video.preset)).join('')}
+      </select></div>
+      <div class="field"><label>HLS SEGMENT (s)</label><input type="number" name="video[hls_time]" value="${s.video.hls_time}" min="1" max="10"></div>
+      <div class="field"><label>HLS LIST SIZE</label><input type="number" name="video[hls_list_size]" value="${s.video.hls_list_size}" min="3" max="20"></div>
+    </div>
+    <div class="stab-pane ${activeTab==='audio'?'active':''}" id="pane-audio">
+      <div class="field-check"><input type="checkbox" id="s-audio-enabled" name="audio[enabled]" ${s.audio.enabled?'checked':''}><label for="s-audio-enabled">Enable Audio</label></div>
+      <div id="audio-fields" style="display:${s.audio.enabled?'block':'none'}">
+        <div class="field"><label>AUDIO DEVICE</label><select name="audio[device]">${audioOpts}</select></div>
+        <div class="field"><label>SAMPLE RATE</label><select name="audio[sample_rate]">
+          ${[8000,16000,22050,44100,48000].map(r => opt(r, r+' Hz', s.audio.sample_rate)).join('')}
+        </select></div>
+        <div class="field"><label>BIT RATE</label><select name="audio[bit_rate]">
+          ${['64k','96k','128k','192k'].map(r => opt(r, r, s.audio.bit_rate)).join('')}
+        </select></div>
+      </div>
+    </div>
+    <div class="stab-pane ${activeTab==='storage'?'active':''}" id="pane-storage">
+      <div class="field"><label>SNAPSHOT INTERVAL (s)</label><input type="number" name="general[snapshot_interval]" value="${s.general.snapshot_interval}" min="5" max="3600"></div>
+      <div class="field"><label>DAYS TO KEEP</label><input type="number" name="general[max_days_to_keep]" value="${s.general.max_days_to_keep}" min="1" max="365"></div>
+      <div class="field"><label>SNAPSHOT DIR</label><input type="text" name="storage[snapshot_dir]" value="${s.storage.snapshot_dir}"></div>
+      <div class="field"><label>TIMELAPSE DIR</label><input type="text" name="storage[timelapse_dir]" value="${s.storage.timelapse_dir}"></div>
+      <div class="field"><label>HLS DIR</label><input type="text" name="storage[hls_dir]" value="${s.storage.hls_dir}"></div>
+    </div>
+    <div class="stab-pane ${activeTab==='auth'?'active':''}" id="pane-auth">
+      <div class="field"><label>USERNAME</label><input type="text" name="auth[username]" value="${s.auth.username}"></div>
+      <div class="field"><label>NEW PASSWORD</label><input type="password" name="auth[password]" placeholder="leave blank to keep current"></div>
+    </div>
+    <button class="save-btn" onclick="saveSettings()">SAVE</button>
+    <div class="save-msg" id="save-msg"></div>
+  `;
+
+  document.getElementById('s-audio-enabled').addEventListener('change', function() {
+    document.getElementById('audio-fields').style.display = this.checked ? 'block' : 'none';
+  });
+  document.getElementById('s-video-device').addEventListener('change', function() {
+    const resSelect = document.getElementById('s-resolution');
+    resSelect.innerHTML = '<option>loading…</option>';
+    fetch(`/api/resolutions?device=${this.value}`).then(r=>r.json()).then(res => {
+      resSelect.innerHTML = res.map(r => `<option value="${r}">${r}</option>`).join('');
+    });
+  });
+}
+
+function saveSettings() {
+  const panel = document.getElementById('settings-body');
+  const inputs = panel.querySelectorAll('input,select');
+  const out = { general:{}, video:{}, audio:{}, storage:{}, auth:{} };
+
+  inputs.forEach(el => {
+    const m = (el.name||'').match(/^([a-z]+)\[([a-z_]+)\]$/);
+    if (!m) return;
+    const [, sec, key] = m;
+    let val = el.type === 'checkbox' ? el.checked : el.value;
+    if (['framerate','hls_time','hls_list_size','snapshot_interval','max_days_to_keep','sample_rate'].includes(key)) val = parseInt(val);
+    out[sec][key] = val;
+  });
+
+  fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(out) })
+    .then(r=>r.json())
+    .then(d => {
+      const msg = document.getElementById('save-msg');
+      if (d.success) { msg.textContent = 'saved'; msg.className = 'save-msg ok'; settingsData = null; }
+      else { msg.textContent = d.error || 'error'; msg.className = 'save-msg err'; }
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+    })
+    .catch(() => { const msg = document.getElementById('save-msg'); msg.textContent = 'error'; msg.className = 'save-msg err'; });
+}
+
+// ── Disk usage ────────────────────────────────────────────────────────────────
+fetch('/api/disk').then(r => r.json()).then(d => {
+  const used = d.total_gb - d.free_gb;
+  const pct  = Math.min(100, Math.round(used / d.total_gb * 100));
+  document.getElementById('disk-bar-fill').style.width = pct + '%';
+  document.getElementById('disk-label').textContent =
+    `${d.free_gb}GB free  ·  snaps ${d.snapshots_mb}MB  ·  tl ${d.timelapse_mb}MB`;
+}).catch(() => {});
+</script>
+</body>
+</html>
